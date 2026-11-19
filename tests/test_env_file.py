@@ -28,7 +28,8 @@ def test_aplica_as_chaves_conhecidas_que_faltam_no_processo(tmp_path):
         tmp_path,
         "TELEGRAM_BOT_TOKEN=t\nOPENAI_API_KEY=k\nALLOWED_PHONE=5511\n"
         f"TOTP_SECRET={SEGREDO_TOTP}\nTOTP_UNLOCK_HOURS=6\n"
-        "WEBAPP_URL=https://painel.example\nWEBAPP_PORT=29000\nBOT_LOCAL_PORT=29001\n",
+        "WEBAPP_URL=https://painel.example\nWEBAPP_PORT=29000\nBOT_LOCAL_PORT=29001\n"
+        "RC_ACCOUNTS=personal\n",
     )
     environ = env_for(d)
     applied = config.apply_env_file(environ, home=tmp_path)

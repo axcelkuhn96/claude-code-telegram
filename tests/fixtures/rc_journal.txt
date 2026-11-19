@@ -1,0 +1,9 @@
+[2m[22m
+Remote Control
+[32m●[39m Connected · cbs-lab · main
+Capacity: 0/32 · New sessions will be created in an isolated worktree
+Continue coding in the Claude mobile app or ]8;;https://claude.ai/code?environment=env_0FAKEFAKEFAKE1\https://claude.ai/code?environment=env_0FAKEFAKEFAKE1]8;;\
+Press space to show QR code
+]8;;https://claude.ai/code/session_01FAKEFAKEFAKE0001?from=cliSession 1]8;;
+]8;;https://claude.ai/code/session_01FAKEFAKEFAKE0002?from=cliSession 2]8;;
+Capacity: 2/32 · New sessions will be created in an isolated worktree

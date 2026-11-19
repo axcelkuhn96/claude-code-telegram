@@ -43,6 +43,7 @@ from telegram.ext import (
 
 from bot import files as files_mod
 from bot import pinned as pinned_mod
+from bot import rc as rc_mod
 from bot.pinned import PinnedStatus
 from bot import slots as slots_mod
 from bot import sessions as sessions_mod  # histórico (C1) é opcional até o W2 landar
@@ -113,6 +114,7 @@ HELP = (
     "/historico [n] — últimas mensagens da sessão\n"
     "/status — estado do bot e da máquina\n"
     "/menu — mostra o teclado fixo\n"
+    "/rc — 🛰 RC: servidores Remote Control (personal); /rc parar encerra todos\n"
     '/fixar [n] · /desafixar n — atalhos 1-4 ("2: texto" fala com o atalho 2)\n'
     "/destravar <código> · /trancar — trava TOTP (se configurada)\n"
     "Texto, áudio ou arquivo vira prompt da sessão ativa."
@@ -127,6 +129,7 @@ COMMANDS = [
     ("parar", "interromper execução"),
     ("status", "estado do bot"),
     ("menu", "teclado fixo"),
+    ("rc", "Remote Control (personal)"),
     ("encerrar", "encerrar a sessão ativa"),
     ("fixar", "fixar a sessão ativa num atalho"),
     ("desafixar", "remover um atalho"),
@@ -162,6 +165,8 @@ _OTHER_RE = re.compile(
 DRAIN_MESSAGE = "⏳ reiniciando em instantes — mande de novo em 1 min"
 DRAIN_CAP_S = 30 * 60.0  # espera máxima por execuções antes de reiniciar mesmo assim
 DRAIN_POLL_S = 1.0
+RC_URL_WAIT_S = 20.0  # espera o link do ambiente aparecer no journal da unit
+RC_URL_POLL_S = 1.0
 INTERRUPT_CODES = (143, -15)  # SIGTERM (shell / subprocess)
 INTERRUPTED_KEEP_S = 24 * 3600.0
 MAX_RESEND_PROMPT = 20000
@@ -563,6 +568,8 @@ class Bot:
         self.session_accounts: dict[str, str] = {}
         self._tasks: set[asyncio.Task] = set()
         self._stopped: set[str] = set()
+        self._rc_inflight: set[tuple[str, str]] = set()
+        self._rc_warned: set[tuple[str, str]] = set()
         self.feeds = FeedStore()
         # token -> (sid, projeto, prompt) do último pedido que bateu no limite da conta
         self._retry: OrderedDict[str, tuple[str, str, str]] = OrderedDict()
@@ -884,6 +891,7 @@ class Bot:
             ("status", self.cmd_status),
             ("historico", self.cmd_historico),
             ("menu", self.cmd_menu),
+            ("rc", self.cmd_rc),
             ("destravar", self.cmd_destravar),
             ("trancar", self.cmd_trancar),
             ("encerrar", self.cmd_encerrar),
@@ -1104,6 +1112,7 @@ class Bot:
         ):
             st.account = entry["account"]
         self.save()
+        self.rc_ensure()
         await self.send(
             chat_id,
             f"🔵 atalho {n} · {_base(st.project)} ativo"
@@ -1321,9 +1330,11 @@ class Bot:
                 st.account = name
                 self.session_accounts[sid] = name
                 self.save()
+                self.rc_ensure()
                 return None, f"🔀 sessão {short(sid)} agora na conta {name}", True
         st.account = name
         self.save()
+        self.rc_ensure()
         return None, f"Conta ativa: {name}", False
 
     async def switch_account(self, chat_id: int, name: str) -> None:
@@ -1841,6 +1852,7 @@ class Bot:
         if account and any(p.name == account for p in self.profiles()):
             st.account = account
         self.save()
+        self.rc_ensure()
         return None
 
     def _activation_text(self, sid: str) -> str:
@@ -1896,6 +1908,7 @@ class Bot:
         sid = str(uuid.uuid4())
         self.state.session_id = sid
         self.save()
+        self.rc_ensure()
         await self.send(chat_id, f"🆕 sessão {short(sid)}. Mande a primeira mensagem.")
 
     @owner_only
@@ -1933,6 +1946,12 @@ class Bot:
         login = await self._login_line()
         if login:
             lines.insert(3, login)
+        rc_items = await asyncio.to_thread(rc_mod.status)
+        if rc_items or rc_mod.accounts():
+            lines.insert(
+                len(lines) - 1,
+                f"🛰 RC: {sum(1 for i in rc_items if i['active'])} servidor(es)",
+            )
         await self.send(update.effective_chat.id, "\n".join(lines))
 
     async def _login_line(self) -> str | None:
@@ -1956,6 +1975,150 @@ class Bot:
             return None
         return f"⚠️ Login da conta {item.name} vence em {max(int(left.total_seconds() // 86400), 0)} d"
 
+    # -- Remote Control (personal) --
+
+    def rc_ensure(self) -> None:
+        """Conta ativa em RC_ACCOUNTS e projeto ativo: garante o servidor Remote Control em
+        segundo plano. Sem loop rodando (chamada síncrona de teste/script) não faz nada."""
+        account, project = self.state.account, self.state.project
+        if not account or not project or account not in rc_mod.accounts():
+            return
+        key = (account, project)
+        if key in self._rc_inflight:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._rc_inflight.add(key)
+        self._spawn(self._rc_ensure_task(account, project))
+
+    async def _rc_ensure_task(self, account: str, project: str) -> None:
+        key = (account, project)
+        try:
+            prof = next((p for p in self.profiles() if p.name == account), None)
+            owner = self.state.owner_id
+            if prof is None or owner is None:
+                return
+            res = await asyncio.to_thread(
+                rc_mod.start, account, prof.config_dir, project, self.cfg.claude_bin
+            )
+            if res.status == "untrusted":
+                if key not in self._rc_warned:
+                    self._rc_warned.add(key)
+                    await self.send(
+                        owner,
+                        f"⚠️ Remote Control: projeto não confiado na {account} — "
+                        f"abra `{account}` uma vez em {project} no PC",
+                    )
+            elif res.status == "started":
+                self._rc_warned.discard(key)
+                url = await self._rc_wait_url(res.unit)
+                text = f"🛰 Remote Control ligado em {html.escape(self._label(project) or project)} ({html.escape(account)})"
+                if url:
+                    text += f'\n<a href="{html.escape(url, quote=True)}">{html.escape(url)}</a>'
+                await self.send(owner, text, parse_mode="HTML")
+            elif res.status == "error":
+                log.warning("remote control: falha ao iniciar %s", res.unit)
+        except Exception as e:  # noqa: BLE001 - RC é acessório: nunca derruba o fluxo do chat
+            log.warning("remote control: erro (%s)", type(e).__name__)
+        finally:
+            self._rc_inflight.discard(key)
+
+    async def _rc_wait_url(self, unit: str) -> str | None:
+        waited = 0.0
+        while True:
+            items = await asyncio.to_thread(rc_mod.status)
+            url = next(
+                (
+                    i["env_url"]
+                    for i in items
+                    if i["unit"].removesuffix(".service") == unit and i["env_url"]
+                ),
+                None,
+            )
+            if url or waited >= RC_URL_WAIT_S:
+                return url
+            await asyncio.sleep(RC_URL_POLL_S)
+            waited += RC_URL_POLL_S
+
+    def _rc_markup(self, items: list[dict]) -> InlineKeyboardMarkup:
+        rows = [
+            [
+                InlineKeyboardButton(
+                    f"⏹ {self._label(i['project']) or i['unit'][:30]}",
+                    callback_data="rc:"
+                    + i["unit"].removesuffix(".service").rsplit("-", 1)[-1],
+                )
+            ]
+            for i in items
+        ]
+        if len(items) > 1:
+            rows.append([InlineKeyboardButton("⏹ todos", callback_data="rc:all")])
+        return InlineKeyboardMarkup(rows)
+
+    def _rc_text(self, items: list[dict]) -> str:
+        if not items:
+            return "🛰 Nenhum servidor Remote Control rodando."
+        lines = ["🛰 Remote Control:"]
+        for i in items:
+            label = html.escape(self._label(i["project"]) or i["unit"])
+            line = f"• {label} · {html.escape(i['account'] or '?')}"
+            if not i["active"]:
+                line += " · ⏳ reiniciando"
+            if i["env_url"]:
+                line += (
+                    f' · <a href="{html.escape(i["env_url"], quote=True)}">abrir</a>'
+                )
+            if i["capacity"]:
+                line += f" · cap {html.escape(i['capacity'])}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    async def rc_stop_units(self, units: list[str]) -> int:
+        results = [await asyncio.to_thread(rc_mod.stop, u) for u in units]
+        for u in units:  # parou de propósito: o próximo "ligado" vale de novo
+            self._rc_warned = {
+                k
+                for k in self._rc_warned
+                if rc_mod.unit_name(*k) != u.removesuffix(".service")
+            }
+        return sum(results)
+
+    @owner_only
+    async def cmd_rc(self, update: Update, ctx) -> None:
+        chat_id = update.effective_chat.id
+        args = getattr(ctx, "args", None) or []
+        items = await asyncio.to_thread(rc_mod.status)
+        if args and args[0].lower() in ("parar", "stop"):
+            n = await self.rc_stop_units([i["unit"] for i in items])
+            await self.send(chat_id, f"⏹ Remote Control: {n} servidor(es) parado(s).")
+            return
+        await self.send(
+            chat_id,
+            self._rc_text(items),
+            self._rc_markup(items) if items else None,
+            parse_mode="HTML",
+        )
+
+    async def rc_callback(self, chat_id: int, which: str) -> None:
+        items = await asyncio.to_thread(rc_mod.status)
+        if which == "all":
+            units = [i["unit"] for i in items]
+        else:
+            units = [
+                i["unit"]
+                for i in items
+                if i["unit"].removesuffix(".service").endswith("-" + which)
+            ]
+        if not units:
+            await self.send(
+                chat_id, "Esse servidor Remote Control já não está rodando."
+            )
+            return
+        n = await self.rc_stop_units(units)
+        await self.send(chat_id, f"⏹ Remote Control: {n} servidor(es) parado(s).")
+
     # -- callbacks --
 
     @owner_only
@@ -1975,6 +2138,7 @@ class Bot:
                     self.state.session_id = None
                 self.state.project = projects[idx]
                 self.save()
+                self.rc_ensure()
                 await self.send(chat_id, f"📁 Projeto: {projects[idx]}")
         elif m := re.fullmatch(r"a:(.+)", data):
             await self.switch_account(chat_id, m.group(1))
@@ -1983,6 +2147,8 @@ class Bot:
                 await self.pick_session(chat_id, m.group(1))
         elif m := re.fullmatch(r"i:([0-9a-f]{1,16})", data):
             await self.resend_interrupted(chat_id, m.group(1))
+        elif m := re.fullmatch(r"rc:(all|[0-9a-f]{6})", data):
+            await self.rc_callback(chat_id, m.group(1))
         elif data == "e:x":
             await self.send(chat_id, "Cancelado.")
         elif m := re.fullmatch(r"e:([0-9a-f-]{36})", data):
@@ -2598,6 +2764,7 @@ class Bot:
             self.state.session_id = None
         self.state.project = path
         self.save()
+        self.rc_ensure()
         return None
 
     def _session_item(
@@ -2706,6 +2873,7 @@ class Bot:
         sid = str(uuid.uuid4())
         st.session_id = sid
         self.save()
+        self.rc_ensure()
         return sid
 
     async def use_session(self, sid: str) -> dict:

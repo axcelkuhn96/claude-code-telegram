@@ -24,6 +24,7 @@ KNOWN_KEYS = (
     "WEBAPP_URL",
     "WEBAPP_PORT",
     "BOT_LOCAL_PORT",
+    "RC_ACCOUNTS",
 )
 
 
