@@ -137,3 +137,5 @@ def test_webapp_tem_badge_rc_e_atualizacao_da_conversa():
     assert 'id="chat-rc"' in html and "Remote Control" in html
     assert "viewedWorking()" in html and "}, 4000);" in html
     assert "loadHistory(true)" in html
+    # o contador "Agora" aceita a lista (api_state) e o número
+    assert "Array.isArray(st.working) ? st.working.length" in html

@@ -593,7 +593,7 @@ function renderTop() {
   }
   $('#tab-badge').hidden = !n;
   syncChatActs();
-  const w = Number.isFinite(st.working) ? st.working : 0;
+  const w = Array.isArray(st.working) ? st.working.length : (Number.isFinite(st.working) ? st.working : 0);
   const cnt = $('#agora-count');
   cnt.hidden = !w;
   cnt.textContent = String(w);
