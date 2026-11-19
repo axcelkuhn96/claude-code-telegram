@@ -232,6 +232,15 @@ class RunManager:
     def running(self) -> list[str]:
         return [sid for sid in self._runs if self.busy(sid)]
 
+    def attach(self, session_id: str, run) -> None:
+        """Registra um objeto que quaca como `Run` (ex.: sessão hospedada no tmux): `busy`,
+        `running`, `/parar` e o reinício seguro passam a enxergá-lo."""
+        self._runs[session_id] = run
+
+    def detach(self, session_id: str, run) -> None:
+        if self._runs.get(session_id) is run:
+            del self._runs[session_id]
+
     async def launch(
         self,
         session_id: str,

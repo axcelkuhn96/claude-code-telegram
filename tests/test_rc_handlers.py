@@ -91,21 +91,24 @@ async def test_projeto_ativo_na_personal_liga_rc_e_posta_link(tmp_path, monkeypa
     assert f'<a href="{ENV_URL}">' in texts[0]
 
 
-async def test_ja_rodando_nao_repete_mensagem(tmp_path, monkeypatch):
+async def test_ja_rodando_avisa_que_ja_esta_ligado(tmp_path, monkeypatch):
     FakeRc(start_status="already").install(monkeypatch)
     bot = rc_bot(tmp_path, monkeypatch)
     bot.rc_ensure()
     await settle(bot)
-    assert sent_texts(bot) == []
+    assert sent_texts(bot) == [
+        "🛰 Remote Control já está ligado em cbs-lab (personal). Veja /rc."
+    ]
 
 
-async def test_conta_fora_da_lista_nao_faz_nada(tmp_path, monkeypatch):
-    fake = FakeRc()
+async def test_manual_vale_para_conta_fora_da_lista(tmp_path, monkeypatch):
+    """`/rc server` é manual: liga o servidor avulso de qualquer conta ativa."""
+    fake = FakeRc(start_status="already")
     fake.install(monkeypatch)
     bot = rc_bot(tmp_path, monkeypatch, account="claude")
     bot.rc_ensure()
     await settle(bot)
-    assert fake.starts == [] and sent_texts(bot) == []
+    assert fake.starts == [("claude", str(tmp_path / "c1"), PROJECT)]
 
 
 async def test_sem_projeto_ou_sem_conta_nao_faz_nada(tmp_path, monkeypatch):
@@ -115,16 +118,6 @@ async def test_sem_projeto_ou_sem_conta_nao_faz_nada(tmp_path, monkeypatch):
     bot.state.project = None
     bot.rc_ensure()
     bot.state.project, bot.state.account = PROJECT, None
-    bot.rc_ensure()
-    await settle(bot)
-    assert fake.starts == []
-
-
-async def test_rc_desligado_por_env_vazia(tmp_path, monkeypatch):
-    fake = FakeRc()
-    fake.install(monkeypatch)
-    bot = rc_bot(tmp_path, monkeypatch)
-    monkeypatch.setenv("RC_ACCOUNTS", "")
     bot.rc_ensure()
     await settle(bot)
     assert fake.starts == []
@@ -144,12 +137,12 @@ async def test_nao_confiado_avisa_uma_vez(tmp_path, monkeypatch):
     assert f"abra `personal` uma vez em {PROJECT} no PC" in texts[0]
 
 
-async def test_erro_de_start_nao_derruba_nem_posta(tmp_path, monkeypatch):
+async def test_erro_de_start_avisa_sem_derrubar(tmp_path, monkeypatch):
     FakeRc(start_status="error").install(monkeypatch)
     bot = rc_bot(tmp_path, monkeypatch)
     bot.rc_ensure()
     await settle(bot)
-    assert sent_texts(bot) == []
+    assert sent_texts(bot) == ["❌ Remote Control: falha ao iniciar o servidor."]
     assert bot._rc_inflight == set()
 
 
@@ -185,43 +178,46 @@ def test_sem_loop_rodando_nao_faz_nada(tmp_path, monkeypatch):
 # ---------- pontos de ativação ----------
 
 
-async def test_nova_sessao_projeto_e_troca_de_conta_acionam(tmp_path, monkeypatch):
+async def test_servidor_avulso_nao_sobe_mais_sozinho(tmp_path, monkeypatch):
+    """Contas de RC_ACCOUNTS usam a sessão hospedada: nova sessão, projeto, conta e ativação
+    não ligam mais o servidor `claude remote-control` separado."""
     fake = FakeRc(start_status="already")
     fake.install(monkeypatch)
     bot = rc_bot(tmp_path, monkeypatch)
     await bot.new_session_chat(OWNER)
-    await settle(bot)
-    assert len(fake.starts) == 1
-
     bot.project_list = lambda: ["/home/x", PROJECT, "/p/outro"]
     await bot.on_callback(upd(data="p:2"), CTX)
-    await settle(bot)
-    assert fake.starts[-1][2] == "/p/outro"
-
     assert bot.select_project(PROJECT) is None
-    await settle(bot)
-    assert fake.starts[-1][2] == PROJECT
-
     bot.state.account = "claude"
     err, _, _ = bot.apply_account("personal")
-    await settle(bot)
-    assert err is None and fake.starts[-1][0] == "personal"
-
-    n = len(fake.starts)
+    assert err is None
     bot.new_session()
+    bot._find_session_sync = lambda s: ("/p/outro", "personal")
+    assert await bot._activate_session("33333333-3333-4333-8333-333333333333") is None
     await settle(bot)
-    assert len(fake.starts) == n + 1
+    assert fake.starts == []
 
 
-async def test_ativar_sessao_aciona(tmp_path, monkeypatch):
+async def test_rc_server_liga_manual(tmp_path, monkeypatch):
     fake = FakeRc(start_status="already")
     fake.install(monkeypatch)
     bot = rc_bot(tmp_path, monkeypatch)
-    sid = "33333333-3333-4333-8333-333333333333"
-    bot._find_session_sync = lambda s: ("/p/outro", "personal")
-    assert await bot._activate_session(sid) is None
+    ctx = type("C", (), {"args": ["server"]})()
+    await bot.cmd_rc(upd(text="/rc server"), ctx)
     await settle(bot)
-    assert fake.starts[-1] == ("personal", str(tmp_path / "cfg3"), "/p/outro")
+    assert fake.starts == [("personal", str(tmp_path / "cfg3"), PROJECT)]
+    assert "ligando o servidor" in sent_texts(bot)[0]
+
+
+async def test_rc_server_sem_projeto_pede_projeto(tmp_path, monkeypatch):
+    fake = FakeRc()
+    fake.install(monkeypatch)
+    bot = rc_bot(tmp_path, monkeypatch)
+    bot.state.project = None
+    ctx = type("C", (), {"args": ["server"]})()
+    await bot.cmd_rc(upd(text="/rc server"), ctx)
+    await settle(bot)
+    assert fake.starts == [] and "/projetos" in sent_texts(bot)[0]
 
 
 # ---------- /rc ----------
@@ -300,7 +296,7 @@ async def test_status_mostra_contagem(tmp_path, monkeypatch):
 
     bot.usage = usage
     await bot.cmd_status(upd(text="/status"), CTX)
-    assert "🛰 RC: 1 servidor(es)" in sent_texts(bot)[0]
+    assert "🛰 RC: 0 hospedada(s) · 1 servidor(es)" in sent_texts(bot)[0]
 
 
 def test_help_e_comandos_citam_rc():

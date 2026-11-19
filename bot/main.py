@@ -169,6 +169,9 @@ def build(
             bot.apply_menu_button()
         )  # "Painel" (Mini App), se WEBAPP_URL e dono vinculado
         webapp_server.append(await start_webapp(bot, cfg))
+        await (
+            bot.adopt_hosts()
+        )  # sessões hospedadas (tmux) que sobreviveram ao reinício
         await bot.post_interrupted()  # "⏸ interrompido pelo reinício" + 🔁 Reenviar
         bot.pinned_enabled = (
             True  # barra de status fixada + placeholder do campo de texto

@@ -42,6 +42,7 @@ from telegram.ext import (
 )
 
 from bot import files as files_mod
+from bot import hosted as hosted_mod
 from bot import pinned as pinned_mod
 from bot import rc as rc_mod
 from bot.pinned import PinnedStatus
@@ -55,6 +56,7 @@ from bot.localapi import Asks
 from bot.power import power_status, read_power_raw
 from bot.runfeed import FeedStore
 from bot.runner import RunManager, build_args
+from bot.stream import Event
 from bot.sessions import (
     SessionInfo,
     copy_session_to,
@@ -114,7 +116,8 @@ HELP = (
     "/historico [n] — últimas mensagens da sessão\n"
     "/status — estado do bot e da máquina\n"
     "/menu — mostra o teclado fixo\n"
-    "/rc — 🛰 RC: servidores Remote Control (personal); /rc parar encerra todos\n"
+    "/rc — 🛰 RC: sessões hospedadas (personal, também no claude.ai) e servidores; "
+    "/rc server liga um servidor avulso; /rc parar encerra os servidores\n"
     '/fixar [n] · /desafixar n — atalhos 1-4 ("2: texto" fala com o atalho 2)\n'
     "/destravar <código> · /trancar — trava TOTP (se configurada)\n"
     "Texto, áudio ou arquivo vira prompt da sessão ativa."
@@ -167,6 +170,21 @@ DRAIN_CAP_S = 30 * 60.0  # espera máxima por execuções antes de reiniciar mes
 DRAIN_POLL_S = 1.0
 RC_URL_WAIT_S = 20.0  # espera o link do ambiente aparecer no journal da unit
 RC_URL_POLL_S = 1.0
+# sessões hospedadas (TUI no tmux, ver bot/hosted.py)
+HOST_POLL_S = 0.5  # leitura do .jsonl
+HOST_IDLE_S = 6.0  # .jsonl parado há isso com turno aberto: olha o painel (diálogo?)
+HOST_PROBE_EVERY_S = 2.0
+HOST_END_IDLE_S = 10.0  # painel pronto + .jsonl parado há isso: fim de turno inferido
+HOST_ALIVE_EVERY_S = 5.0
+HOST_READY_S = 60.0  # TUI subindo até mostrar a caixa de entrada
+HOST_DIALOG_WAIT_S = 600.0  # com diálogo na subida (confiança, retomada), espera o dono
+HOST_READY_POLL_S = 0.5
+HOST_BIND_TIMEOUT_S = 45.0  # o prompt colado tem que aparecer no .jsonl
+HOST_KEY_SETTLE_S = 0.8
+HOST_TYPE_PAUSE_S = 0.3
+HOST_INTERRUPT_SETTLE_S = 1.5
+HOST_PROMPT_CHARS = 1000
+VIA_RC = "🛰 (via claude.ai)"
 INTERRUPT_CODES = (143, -15)  # SIGTERM (shell / subprocess)
 INTERRUPTED_KEEP_S = 24 * 3600.0
 MAX_RESEND_PROMPT = 20000
@@ -570,6 +588,9 @@ class Bot:
         self._stopped: set[str] = set()
         self._rc_inflight: set[tuple[str, str]] = set()
         self._rc_warned: set[tuple[str, str]] = set()
+        self.tmux = hosted_mod.Tmux()  # injetável nos testes
+        self.hosts: dict[str, hosted_mod.Host] = {}  # sid -> sessão hospedada viva
+        self._host_locks: dict[str, asyncio.Lock] = {}
         self.feeds = FeedStore()
         # token -> (sid, projeto, prompt) do último pedido que bateu no limite da conta
         self._retry: OrderedDict[str, tuple[str, str, str]] = OrderedDict()
@@ -846,7 +867,12 @@ class Bot:
         """No start: avisa de cada execução que ficou pela metade (reinício forçado, queda…)."""
         now = time.time()
         st = self.state
-        keep = [e for e in st.interrupted if now - e["ts"] <= INTERRUPTED_KEEP_S]
+        # sessão hospedada readotada: o turno seguiu no tmux e o leitor entrega o resultado
+        keep = [
+            e
+            for e in st.interrupted
+            if now - e["ts"] <= INTERRUPTED_KEEP_S and e["session_id"] not in self.hosts
+        ]
         if len(keep) != len(st.interrupted):
             st.interrupted = keep
             self.save()
@@ -873,8 +899,10 @@ class Bot:
         )
         for sid in self.runs.running():
             run = self.runs.get(sid)
-            if run is not None:
-                await run.stop()
+            if run is not None and not getattr(run, "hosted", False):
+                await (
+                    run.stop()
+                )  # sessão hospedada (tmux) segue viva: é readotada no start
         for t in list(self._tasks):
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -1112,7 +1140,6 @@ class Bot:
         ):
             st.account = entry["account"]
         self.save()
-        self.rc_ensure()
         await self.send(
             chat_id,
             f"🔵 atalho {n} · {_base(st.project)} ativo"
@@ -1330,11 +1357,9 @@ class Bot:
                 st.account = name
                 self.session_accounts[sid] = name
                 self.save()
-                self.rc_ensure()
                 return None, f"🔀 sessão {short(sid)} agora na conta {name}", True
         st.account = name
         self.save()
-        self.rc_ensure()
         return None, f"Conta ativa: {name}", False
 
     async def switch_account(self, chat_id: int, name: str) -> None:
@@ -1852,7 +1877,6 @@ class Bot:
         if account and any(p.name == account for p in self.profiles()):
             st.account = account
         self.save()
-        self.rc_ensure()
         return None
 
     def _activation_text(self, sid: str) -> str:
@@ -1908,7 +1932,6 @@ class Bot:
         sid = str(uuid.uuid4())
         self.state.session_id = sid
         self.save()
-        self.rc_ensure()
         await self.send(chat_id, f"🆕 sessão {short(sid)}. Mande a primeira mensagem.")
 
     @owner_only
@@ -1947,10 +1970,11 @@ class Bot:
         if login:
             lines.insert(3, login)
         rc_items = await asyncio.to_thread(rc_mod.status)
-        if rc_items or rc_mod.accounts():
+        if rc_items or self.hosts or rc_mod.accounts():
             lines.insert(
                 len(lines) - 1,
-                f"🛰 RC: {sum(1 for i in rc_items if i['active'])} servidor(es)",
+                f"🛰 RC: {len(self.hosts)} hospedada(s) · "
+                f"{sum(1 for i in rc_items if i['active'])} servidor(es)",
             )
         await self.send(update.effective_chat.id, "\n".join(lines))
 
@@ -1978,10 +2002,11 @@ class Bot:
     # -- Remote Control (personal) --
 
     def rc_ensure(self) -> None:
-        """Conta ativa em RC_ACCOUNTS e projeto ativo: garante o servidor Remote Control em
-        segundo plano. Sem loop rodando (chamada síncrona de teste/script) não faz nada."""
+        """`/rc server` (manual): garante o servidor Remote Control AVULSO da conta/projeto ativos
+        em segundo plano. As contas de RC_ACCOUNTS usam a sessão hospedada (a mesma do chat) e
+        não sobem servidor sozinhas. Sem loop rodando (chamada síncrona) não faz nada."""
         account, project = self.state.account, self.state.project
-        if not account or not project or account not in rc_mod.accounts():
+        if not account or not project:
             return
         key = (account, project)
         if key in self._rc_inflight:
@@ -2018,8 +2043,17 @@ class Bot:
                 if url:
                     text += f'\n<a href="{html.escape(url, quote=True)}">{html.escape(url)}</a>'
                 await self.send(owner, text, parse_mode="HTML")
+            elif res.status == "already":
+                await self.send(
+                    owner,
+                    f"🛰 Remote Control já está ligado em {self._label(project) or project} "
+                    f"({account}). Veja /rc.",
+                )
             elif res.status == "error":
                 log.warning("remote control: falha ao iniciar %s", res.unit)
+                await self.send(
+                    owner, "❌ Remote Control: falha ao iniciar o servidor."
+                )
         except Exception as e:  # noqa: BLE001 - RC é acessório: nunca derruba o fluxo do chat
             log.warning("remote control: erro (%s)", type(e).__name__)
         finally:
@@ -2094,12 +2128,40 @@ class Bot:
             n = await self.rc_stop_units([i["unit"] for i in items])
             await self.send(chat_id, f"⏹ Remote Control: {n} servidor(es) parado(s).")
             return
+        if args and args[0].lower() in ("server", "servidor"):
+            if not self.state.account or not self.state.project:
+                await self.send(
+                    chat_id, "Escolha a conta (/contas) e o projeto (/projetos)."
+                )
+                return
+            await self.send(chat_id, "🛰 ligando o servidor Remote Control avulso…")
+            self.rc_ensure()
+            return
+        hosted_text = await self._rc_hosted_text()
         await self.send(
             chat_id,
-            self._rc_text(items),
+            f"{hosted_text}\n\n{self._rc_text(items)}",
             self._rc_markup(items) if items else None,
             parse_mode="HTML",
         )
+
+    async def _rc_hosted_text(self) -> str:
+        """Sessões hospedadas (as mesmas do chat, também no claude.ai): projeto · título · nome RC."""
+        if not self.hosts:
+            return "🛰 Nenhuma sessão hospedada."
+        lines = ["🛰 Sessões hospedadas (Telegram + claude.ai):"]
+        for h in list(self.hosts.values()):
+            title = await asyncio.to_thread(self._title_sync, h.sid, h.project)
+            line = (
+                f"• {html.escape(self._label(h.project) or h.project)} · "
+                f"{html.escape(title or short(h.sid))} · {html.escape(h.rc_name or '?')}"
+            )
+            if h.active:
+                line += " · ⏳"
+            if h.rc_url:
+                line += f' · <a href="{html.escape(h.rc_url, quote=True)}">abrir</a>'
+            lines.append(line)
+        return "\n".join(lines)
 
     async def rc_callback(self, chat_id: int, which: str) -> None:
         items = await asyncio.to_thread(rc_mod.status)
@@ -2118,6 +2180,477 @@ class Bot:
             return
         n = await self.rc_stop_units(units)
         await self.send(chat_id, f"⏹ Remote Control: {n} servidor(es) parado(s).")
+
+    # -- sessões hospedadas (TUI no tmux com Remote Control, ver bot/hosted.py) --
+
+    def _host_prefix(self, host: hosted_mod.Host) -> str:
+        return (
+            ""
+            if host.sid == self.state.session_id
+            else prefix(host.project, host.sid) + " "
+        )
+
+    def _host_register(
+        self,
+        sid: str,
+        project: str,
+        account: str,
+        config_dir: str | Path,
+        offset: int,
+        rc_name: str,
+    ) -> hosted_mod.Host:
+        path = Path(config_dir) / "projects" / encode_cwd(project) / f"{sid}.jsonl"
+        host = hosted_mod.Host(
+            sid,
+            project,
+            account,
+            config_dir,
+            hosted_mod.JsonlTail(path, offset),
+            rc_name,
+        )
+        host.stop_cb = self._host_interrupt
+        now = self.clock()
+        host.last_growth = host.last_alive = now
+        self.hosts[sid] = host
+        self.runs.attach(sid, host)
+        self.session_accounts[sid] = account
+        self._spawn(self._host_watch(host))
+        return host
+
+    async def _rc_stop_for_project(self, project: str) -> None:
+        """A sessão hospedada substitui o servidor RC avulso do mesmo projeto."""
+        items = await asyncio.to_thread(rc_mod.status)
+        units = [i["unit"] for i in items if i["project"] == project and i["active"]]
+        if units:
+            n = await self.rc_stop_units(units)
+            log.info("sessão hospedada: %d servidor(es) RC avulso(s) parado(s)", n)
+
+    async def _host_ensure(
+        self,
+        chat_id: int,
+        sid: str,
+        project: str,
+        prof: Profile,
+        new: bool,
+        env: dict[str, str],
+    ) -> hosted_mod.Host | None:
+        host = self.hosts.get(sid)
+        if host is not None and host.alive:
+            return await self._host_ready_or_warn(chat_id, host)
+        if not await asyncio.to_thread(rc_mod.is_trusted, prof.config_dir, project):
+            await self.send(
+                chat_id,
+                f"⚠️ Sessão hospedada: projeto não confiado na {prof.name} — "
+                f"abra `{prof.name}` uma vez em {project} no PC",
+            )
+            return None
+        await self._rc_stop_for_project(project)
+        name = hosted_mod.session_name(sid)
+        path = Path(prof.config_dir) / "projects" / encode_cwd(project) / f"{sid}.jsonl"
+        offset = await asyncio.to_thread(hosted_mod.file_size, path)
+        rc_name = hosted_mod.rc_session_name(project)
+        if not await asyncio.to_thread(self.tmux.exists, name):
+            tmux_env = {
+                **env,
+                hosted_mod.ENV_PROJECT: project,
+                hosted_mod.ENV_ACCOUNT: prof.name,
+            }
+            argv = hosted_mod.claude_argv(
+                self.cfg.claude_bin, sid, new, rc_name, MCP_CONFIG
+            )
+            ok, _ = await asyncio.to_thread(
+                self.tmux.start, name, project, tmux_env, argv
+            )
+            if not ok:
+                log.warning("sessão hospedada: tmux não subiu")
+                await self.send(
+                    chat_id, "❌ Falha ao iniciar a sessão hospedada (tmux)."
+                )
+                return None
+            log.info("sessão hospedada iniciada: %s", name)
+        host = self._host_register(
+            sid, project, prof.name, prof.config_dir, offset, rc_name
+        )
+        return await self._host_ready_or_warn(chat_id, host)
+
+    async def _host_ready_or_warn(
+        self, chat_id: int, host: hosted_mod.Host
+    ) -> hosted_mod.Host | None:
+        if host.ready or await self._host_wait_ready(host):
+            host.ready = True
+            return host
+        if host.alive:
+            await self.send(
+                chat_id, "❌ A sessão hospedada não ficou pronta a tempo. Veja /rc."
+            )
+        return None
+
+    async def _host_wait_ready(self, host: hosted_mod.Host) -> bool:
+        """Espera a caixa de entrada do TUI; diálogo na subida vai ao dono (e a espera estica)."""
+        began = self.clock()
+        deadline = began + HOST_READY_S
+        while self.clock() < deadline and host.alive:
+            pane = await asyncio.to_thread(self.tmux.capture, host.name)
+            state = hosted_mod.pane_state(pane)
+            if state == "ready":
+                return True
+            if state == "dialog":
+                await self._host_dialog(host, hosted_mod.parse_dialog(pane))
+                deadline = max(deadline, began + HOST_DIALOG_WAIT_S)
+            elif not await asyncio.to_thread(self.tmux.exists, host.name):
+                await self._host_gone(host)
+                return False
+            await asyncio.sleep(HOST_READY_POLL_S)
+        return False
+
+    async def _hosted_submit(
+        self,
+        chat_id: int,
+        sid: str,
+        project: str,
+        prof: Profile,
+        new: bool,
+        text: str,
+        env: dict[str, str],
+    ) -> hosted_mod.HostedTurn | None:
+        """Cola o prompt no TUI da sessão (sobe o tmux se preciso). Ocupada -> RuntimeError;
+        falha do tmux -> OSError; falha já avisada ao dono -> None."""
+        lock = self._host_locks.setdefault(sid, asyncio.Lock())
+        async with lock:
+            host = await self._host_ensure(chat_id, sid, project, prof, new, env)
+            if host is None:
+                return None
+            if host.active:
+                raise RuntimeError("busy")
+            turn = hosted_mod.HostedTurn(text, self.clock())
+            host.ours, host.turn_ours = turn, False
+            if not await asyncio.to_thread(self._host_type, host, text):
+                host.ours = None
+                raise OSError("tmux")
+            return turn
+
+    def _host_clear_input(self, host: hosted_mod.Host) -> None:
+        """Esvazia a caixa de entrada (Esc no começo do turno devolve o prompt para ela)."""
+        for _ in range(10):
+            box = hosted_mod.input_box(self.tmux.capture(host.name))
+            if not box:
+                return
+            self.tmux.keys(host.name, "C-u", "BSpace", "C-u", "BSpace")
+            time.sleep(HOST_TYPE_PAUSE_S)
+
+    def _host_type(self, host: hosted_mod.Host, text: str) -> bool:
+        self._host_clear_input(host)
+        if not self.tmux.paste(host.name, text):
+            return False
+        time.sleep(HOST_TYPE_PAUSE_S)  # o TUI processa a colagem antes do Enter
+        return self.tmux.keys(host.name, "Enter")
+
+    async def _host_watch(self, host: hosted_mod.Host) -> None:
+        """Lê o .jsonl (~0,5 s), entrega eventos, confere se o tmux vive e olha o painel quando
+        o turno está aberto e o .jsonl parado (diálogo? fim inferido?)."""
+        while host.alive:
+            await asyncio.sleep(HOST_POLL_S)
+            try:
+                rows = await asyncio.to_thread(host.tail.read)
+                now = self.clock()
+                if rows:
+                    host.last_growth = now
+                for d in rows:
+                    for ev in host.tracker.feed(d):
+                        await self._host_event(host, ev)
+                if not host.alive:
+                    return
+                if now - host.last_alive >= HOST_ALIVE_EVERY_S:
+                    host.last_alive = now
+                    if not await asyncio.to_thread(self.tmux.exists, host.name):
+                        await self._host_gone(host)
+                        return
+                if (
+                    host.active
+                    and now - host.last_growth >= HOST_IDLE_S
+                    and now - host.last_probe >= HOST_PROBE_EVERY_S
+                ):
+                    host.last_probe = now
+                    pane = await asyncio.to_thread(self.tmux.capture, host.name)
+                    await self._host_probe(host, pane, now)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 - o leitor não pode morrer por uma linha ruim
+                log.warning("sessão hospedada: leitor falhou (%s)", type(e).__name__)
+
+    async def _host_event(self, host: hosted_mod.Host, ev: hosted_mod.Ev) -> None:
+        owner = self.state.owner_id
+        turn = host.ours
+        if ev.kind == "url":
+            host.rc_url = ev.text
+            if not host.url_announced and owner is not None:
+                host.url_announced = True
+                url = html.escape(ev.text or "", quote=True)
+                await self.send(
+                    owner,
+                    f"🛰 {html.escape(self._host_prefix(host))}sessão também no claude.ai "
+                    f'({html.escape(host.rc_name)}): <a href="{url}">abrir</a>',
+                    parse_mode="HTML",
+                )
+            return
+        if ev.kind == "prompt":
+            if (
+                turn is not None
+                and not turn.bound
+                and ev.human
+                and hosted_mod.prompt_matches(turn.text, ev.raw or "")
+            ):
+                turn.bound = host.turn_ours = True
+                return
+            host.turn_ours = False
+            if ev.human and ev.text and owner is not None:
+                await self.send(
+                    owner,
+                    f"{VIA_RC} {self._host_prefix(host)}👤 "
+                    f"{_clip_keep_lines(ev.text, HOST_PROMPT_CHARS)}",
+                )
+            self.request_keyboard_refresh()
+            self.request_status_refresh()
+            return
+        if host.turn_ours and turn is not None:
+            if ev.kind == "tool":
+                turn.push(Event("tool", tool=ev.tool, detail=ev.detail))
+            elif ev.kind == "text":
+                turn.push(Event("text", text=ev.text))
+            elif ev.kind == "end":
+                host.ours, host.turn_ours = None, False
+                self._host_dialog_clear(host)
+                turn.push(
+                    Event(
+                        "result",
+                        text=ev.text or "",
+                        is_error=ev.is_error,
+                        duration_ms=ev.duration_ms,
+                    )
+                )
+            return
+        if ev.kind == "end":  # turno que não veio do Telegram (claude.ai, notificação…)
+            self._host_dialog_clear(host)
+            if ev.text and owner is not None:
+                await self.send_markdown(
+                    owner,
+                    f"🛰 {self._host_prefix(host)}{'❌ ' if ev.is_error else ''}{ev.text}",
+                )
+            self.request_keyboard_refresh()
+            self.request_status_refresh()
+
+    async def _host_probe(self, host: hosted_mod.Host, pane: str, now: float) -> None:
+        dialog = hosted_mod.parse_dialog(pane)
+        if dialog is not None:
+            await self._host_dialog(host, dialog)
+            return
+        self._host_dialog_clear(host)
+        turn = host.ours
+        if turn is not None and not turn.bound:
+            if (
+                now - turn.sent_at >= HOST_BIND_TIMEOUT_S
+            ):  # o prompt não chegou ao .jsonl
+                host.ours = None
+                turn.push(
+                    Event(
+                        "result",
+                        text="o terminal não recebeu a mensagem; reenvie (veja /rc).",
+                        is_error=True,
+                    )
+                )
+            return
+        if (
+            host.tracker.in_turn
+            and now - host.last_growth >= HOST_END_IDLE_S
+            and hosted_mod.pane_state(pane) == "ready"
+        ):  # sem marcador de fim (ex.: interrompido no meio): o painel pronto fecha o turno
+            for ev in host.tracker.force_end():
+                await self._host_event(host, ev)
+
+    async def _host_dialog(self, host: hosted_mod.Host, dialog) -> None:
+        """Um diálogo distinto do TUI -> uma mensagem ao dono com botões 1..N, ↵ e ⎋."""
+        owner = self.state.owner_id
+        if dialog is None or dialog.key in host.dialog_seen or owner is None:
+            return
+        host.dialog_seen.add(dialog.key)
+        host.dialog = dialog
+        host.dialog_seq += 1
+        host.free_armed = False
+        sid8 = host.sid[:8]
+        nums = [
+            InlineKeyboardButton(
+                str(n), callback_data=f"hd:{sid8}:{host.dialog_seq}:{n}"
+            )
+            for n, _ in dialog.options[:MAX_OPEN_BUTTONS]
+        ]
+        rows = [nums[i : i + 5] for i in range(0, len(nums), 5)]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "↵ Enter", callback_data=f"hd:{sid8}:{host.dialog_seq}:ent"
+                ),
+                InlineKeyboardButton(
+                    "⎋ Esc", callback_data=f"hd:{sid8}:{host.dialog_seq}:esc"
+                ),
+            ]
+        )
+        text = f"❓ {self._host_prefix(host)}o terminal pergunta:\n\n{dialog.excerpt}"[
+            :MAX_ASK_TEXT
+        ]
+        msg = await self.send(owner, text, InlineKeyboardMarkup(rows))
+        host.dialog_mid = msg.message_id if msg is not None else None
+        host.dialog_text = text
+
+    def _host_dialog_clear(self, host: hosted_mod.Host) -> None:
+        host.dialog = None
+        host.dialog_seen.clear()
+        host.free_armed = False
+
+    async def _host_dialog_done(self, host: hosted_mod.Host, suffix: str) -> None:
+        mid, text = host.dialog_mid, host.dialog_text
+        host.dialog, host.free_armed, host.dialog_mid = None, False, None
+        owner = self.state.owner_id
+        if mid is not None and owner is not None:
+            await self._edit_ask(owner, mid, text, suffix)
+
+    def _dialog_host(self) -> hosted_mod.Host | None:
+        """Sessão hospedada com diálogo aberto (a ativa primeiro)."""
+        active = self.hosts.get(self.state.session_id or "")
+        if active is not None and active.dialog is not None:
+            return active
+        return next((h for h in self.hosts.values() if h.dialog is not None), None)
+
+    def _host_free_answer(self, host: hosted_mod.Host, text: str) -> None:
+        """Texto livre no diálogo: escolhe a opção "Type something." (se houver), cola e Enter."""
+        dialog = host.dialog
+        if dialog is not None and dialog.free is not None and not host.free_armed:
+            self.tmux.keys(host.name, str(dialog.free), literal=True)
+            time.sleep(HOST_TYPE_PAUSE_S)
+        self.tmux.paste(host.name, text)
+        time.sleep(HOST_TYPE_PAUSE_S)
+        self.tmux.keys(host.name, "Enter")
+
+    def _host_pick(self, host: hosted_mod.Host, dialog, n: int) -> None:
+        """Dígito escolhe a opção; se o diálogo continuar igual (o dígito só moveu o cursor), Enter."""
+        self.tmux.keys(host.name, str(n), literal=True)
+        time.sleep(HOST_KEY_SETTLE_S)
+        after = hosted_mod.parse_dialog(self.tmux.capture(host.name))
+        if after is not None and after.key == dialog.key:
+            self.tmux.keys(host.name, "Enter")
+
+    async def host_answer(self, chat_id: int, sid8: str, seq: int, key: str) -> None:
+        host = next((h for h in self.hosts.values() if h.sid.startswith(sid8)), None)
+        dialog = host.dialog if host is not None else None
+        if host is None or dialog is None or seq != host.dialog_seq:
+            await self.send(chat_id, "Esse diálogo já foi encerrado.")
+            return
+        if key == "esc":
+            await asyncio.to_thread(self.tmux.keys, host.name, "Escape")
+            await self._host_dialog_done(host, "⎋ Esc")
+            return
+        if key == "ent":
+            await asyncio.to_thread(self.tmux.keys, host.name, "Enter")
+            await self._host_dialog_done(host, "↵ Enter")
+            return
+        n = int(key)
+        label = dict(dialog.options).get(n)
+        if label is None:
+            return
+        if n == dialog.free:  # "Type something.": o próximo texto/voz é a resposta
+            await asyncio.to_thread(self.tmux.keys, host.name, str(n), literal=True)
+            host.free_armed = True
+            await self.send(
+                chat_id, f"✍️ Digite sua resposta ({_clip(label, ASK_ECHO_CHARS)})"
+            )
+            return
+        await asyncio.to_thread(self._host_pick, host, dialog, n)
+        await self._host_dialog_done(host, f"✅ {n}. {_clip(label, ASK_ECHO_CHARS)}")
+
+    async def _host_interrupt(self, host: hosted_mod.Host) -> None:
+        """/parar: Esc no TUI (interrompe o turno); a caixa de entrada volta vazia."""
+        await asyncio.to_thread(self.tmux.keys, host.name, "Escape")
+        await asyncio.sleep(HOST_INTERRUPT_SETTLE_S)
+        await asyncio.to_thread(self._host_clear_input, host)
+        turn = host.ours
+        host.ours, host.turn_ours = None, False
+        host.tracker.reset()
+        self._host_dialog_clear(host)
+        if turn is not None:
+            turn.close()
+        self.request_keyboard_refresh()
+        self.request_status_refresh()
+
+    def _host_forget(self, host: hosted_mod.Host, reason: str | None) -> None:
+        host.alive = False
+        turn = host.ours
+        host.ours = None
+        if turn is not None:
+            if reason is None:
+                turn.close()
+            else:
+                turn.push(Event("result", text=reason, is_error=True))
+        if self.hosts.get(host.sid) is host:
+            del self.hosts[host.sid]
+        self.runs.detach(host.sid, host)
+        self.request_keyboard_refresh()
+        self.request_status_refresh()
+
+    async def _host_kill(self, host: hosted_mod.Host) -> None:
+        """Encerra a sessão hospedada (kill-session do tmux do próprio bot)."""
+        self._host_forget(host, None)
+        await asyncio.to_thread(self.tmux.kill, host.name)
+        log.info("sessão hospedada encerrada: %s", host.name)
+
+    async def _host_gone(self, host: hosted_mod.Host) -> None:
+        """O TUI saiu sozinho (ex.: /exit no claude.ai)."""
+        if not host.alive:
+            return
+        self._host_forget(host, "a sessão hospedada (tmux) encerrou.")
+        owner = self.state.owner_id
+        if owner is not None:
+            await self.send(
+                owner,
+                f"⏹ sessão hospedada {short(host.sid)} ({self._label(host.project) or '?'}) encerrou.",
+            )
+
+    async def adopt_hosts(self) -> int:
+        """No start: readota as sessões `cc-*` do tmux do bot (sobrevivem ao reinício)."""
+        try:
+            names = await asyncio.to_thread(self.tmux.names)
+        except Exception as e:  # noqa: BLE001 - sem tmux o bot segue
+            log.warning("sessões hospedadas: listagem falhou (%s)", type(e).__name__)
+            return 0
+        n = 0
+        for name in names:
+            env = await asyncio.to_thread(self.tmux.env, name)
+            sid = env.get("CLAUDE_SESSION_ID", "")
+            project = env.get(hosted_mod.ENV_PROJECT, "")
+            account = env.get(hosted_mod.ENV_ACCOUNT, "")
+            config_dir = env.get("CLAUDE_CONFIG_DIR", "")
+            if (
+                not is_uuid(sid)
+                or hosted_mod.session_name(sid) != name
+                or not project.startswith("/")
+                or not config_dir.startswith("/")
+                or sid in self.hosts
+            ):
+                continue
+            path = Path(config_dir) / "projects" / encode_cwd(project) / f"{sid}.jsonl"
+            offset = await asyncio.to_thread(hosted_mod.file_size, path)
+            host = self._host_register(
+                sid,
+                project,
+                account,
+                config_dir,
+                offset,
+                hosted_mod.rc_session_name(project),
+            )
+            host.rc_url = await asyncio.to_thread(hosted_mod.last_rc_url, path)
+            host.url_announced = host.ready = True
+            n += 1
+        if n:
+            log.info("sessões hospedadas readotadas: %d", n)
+        return n
 
     # -- callbacks --
 
@@ -2138,7 +2671,6 @@ class Bot:
                     self.state.session_id = None
                 self.state.project = projects[idx]
                 self.save()
-                self.rc_ensure()
                 await self.send(chat_id, f"📁 Projeto: {projects[idx]}")
         elif m := re.fullmatch(r"a:(.+)", data):
             await self.switch_account(chat_id, m.group(1))
@@ -2149,6 +2681,8 @@ class Bot:
             await self.resend_interrupted(chat_id, m.group(1))
         elif m := re.fullmatch(r"rc:(all|[0-9a-f]{6})", data):
             await self.rc_callback(chat_id, m.group(1))
+        elif m := re.fullmatch(r"hd:([0-9a-f]{8}):(\d{1,6}):(\d{1,2}|ent|esc)", data):
+            await self.host_answer(chat_id, m.group(1), int(m.group(2)), m.group(3))
         elif data == "e:x":
             await self.send(chat_id, "Cancelado.")
         elif m := re.fullmatch(r"e:([0-9a-f-]{36})", data):
@@ -2224,6 +2758,13 @@ class Bot:
                 chat_id,
                 f"↩️ respondido: {_clip(question, ASK_ECHO_CHARS) or '(pergunta)'}",
             )
+            return
+        # diálogo aberto no terminal de uma sessão hospedada: o texto é a resposta
+        host = self._dialog_host()
+        if host is not None:
+            await asyncio.to_thread(self._host_free_answer, host, text)
+            await self._host_dialog_done(host, f"✅ {_clip(text, ASK_ECHO_CHARS)}")
+            await self.send(chat_id, "↩️ respondido no terminal")
             return
         self._spawn(self._safe_run(chat_id, text))
 
@@ -2374,8 +2915,22 @@ class Bot:
             "BOT_LOCAL_PORT": str(self.cfg.local_port),
             "CLAUDE_TELEGRAM_STATE_DIR": str(self.cfg.state_dir),
         }
+        host = self.hosts.get(sid)
+        if (
+            host is not None and host.account != prof.name
+        ):  # trocou de conta: sai do tmux
+            await self._host_kill(host)
+        # conta com Remote Control: a sessão vive como TUI no tmux (a mesma do claude.ai)
+        hosted = sid in self.hosts or prof.name in rc_mod.accounts()
         try:
-            run = await self.runs.launch(sid, args, project, env)
+            if hosted:
+                run = await self._hosted_submit(
+                    chat_id, sid, project, prof, new, text, env
+                )
+                if run is None:
+                    return
+            else:
+                run = await self.runs.launch(sid, args, project, env)
         except RuntimeError:
             await self.send(chat_id, "⏳ Sessão ocupada; use /parar para cancelar.")
             return
@@ -2764,7 +3319,6 @@ class Bot:
             self.state.session_id = None
         self.state.project = path
         self.save()
-        self.rc_ensure()
         return None
 
     def _session_item(
@@ -2873,7 +3427,6 @@ class Bot:
         sid = str(uuid.uuid4())
         st.session_id = sid
         self.save()
-        self.rc_ensure()
         return sid
 
     async def use_session(self, sid: str) -> dict:
@@ -2884,7 +3437,13 @@ class Bot:
         if not isinstance(sid, str) or not is_uuid(sid):
             return {"ok": False, "error": "sessão inválida"}
         run = self.runs.get(sid)
-        if run is not None and self.runs.busy(
+        host = self.hosts.get(sid)
+        if host is not None:  # sessão hospedada: o tmux é filho do bot -> kill-session
+            if host.active:
+                self._stopped.add(sid)
+            await self._host_kill(host)
+            outcome = "stopped"
+        elif run is not None and self.runs.busy(
             sid
         ):  # execução do BOT: SIGTERM→SIGKILL no filho
             self._stopped.add(sid)
