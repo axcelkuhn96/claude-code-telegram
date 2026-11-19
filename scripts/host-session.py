@@ -40,6 +40,17 @@ def bot_run_active(sid: str) -> bool:
     return any(e.get("session_id") == sid for e in st.get("interrupted") or [])
 
 
+def _hosted_prompt() -> str | None:
+    """Mesmo system prompt que o bot passa às sessões hospedadas (deploy/…-hosted.md)."""
+    try:
+        text = (REPO / "deploy" / "telegram-system-prompt-hosted.md").read_text(
+            encoding="utf-8"
+        )
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text.strip() or None
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 4:
         print(__doc__)
@@ -85,6 +96,7 @@ def main(argv: list[str]) -> int:
             not path.exists(),
             rc_name,
             REPO / "deploy" / "mcp.json",
+            _hosted_prompt(),
         )
         ok, out = tmux.start(name, project, env, argv_claude)
         if not ok:
