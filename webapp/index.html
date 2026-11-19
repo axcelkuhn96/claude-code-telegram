@@ -373,6 +373,7 @@ select.sel {
         <button class="btn ghost sm" id="chat-use" type="button">Usar no chat</button>
         <button class="btn danger sm" id="chat-end" type="button">Encerrar</button>
         <p class="chat-note" id="chat-note" hidden></p>
+        <p class="chat-note" id="chat-rc" hidden>🛰 Remote Control · a sessão também está no claude.ai</p>
       </div>
       <div class="msgs" id="msgs">
         <div class="older" id="older" hidden></div>
@@ -1513,6 +1514,7 @@ function syncChatActs() {
   const note = $('#chat-note');
   note.hidden = !(chat.view && chat.view !== activeSid());
   if (!note.hidden) note.textContent = `Sessão ${chat.view.slice(0, 8)} · não é a ativa no bot`;
+  $('#chat-rc').hidden = !(sid && S.state && (S.state.hosted || []).includes(sid));
 }
 $('#chat-use').addEventListener('click', () => { const sid = curSid(); if (sid) useInChat({ session_id: sid }, chatActs); });
 $('#chat-end').addEventListener('click', () => { const sid = curSid(); if (sid) endSession({ session_id: sid }, chatActs); });
@@ -1562,6 +1564,17 @@ async function tick() {
   if (S.tab === 'sessoes' && S.tick % 2 === 0) loadSessions();
 }
 setInterval(tick, 5000);
+// Conversa: com a sessão vista trabalhando (turno aberto), atualiza o fim do histórico a cada 4 s
+// (pausa com a aba escondida; é o acompanhamento de sessões hospedadas sem mensagens no chat)
+function viewedWorking() {
+  const sid = chat.sid;
+  if (!sid || !S.state) return false;
+  return isRunning(sid) || (Array.isArray(S.state.working) && S.state.working.some((w) => w === sid || (w && w.session_id === sid)));
+}
+setInterval(() => {
+  if (document.hidden || authFailed || S.tab !== 'conversa' || chat.status !== 'ready') return;
+  if (viewedWorking()) loadHistory(true);
+}, 4000);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   if (run.active) { clearTimeout(run.timer); runPoll(); }

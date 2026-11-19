@@ -99,7 +99,12 @@ def rc_session_name(project: str, hostname: str | None = None) -> str:
 
 
 def claude_argv(
-    claude_bin: str | Path, sid: str, new: bool, rc_name: str, mcp_config: str | Path
+    claude_bin: str | Path,
+    sid: str,
+    new: bool,
+    rc_name: str,
+    mcp_config: str | Path,
+    system_prompt: str | None = None,
 ) -> list[str]:
     """TUI com Remote Control. `--remote-control=<nome>` (o valor é opcional na CLI: com `=` não
     há ambiguidade); `--mcp-config` (variádico) por último."""
@@ -109,6 +114,7 @@ def claude_argv(
         f"--remote-control={rc_name}",
         "--session-id" if new else "--resume",
         sid,
+        *(["--append-system-prompt", system_prompt] if system_prompt else []),
         "--mcp-config",
         str(mcp_config),
     ]

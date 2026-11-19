@@ -6,6 +6,7 @@ Perguntas e decisões
 - UMA pergunta por chamada, com 2 a 4 opções; a recomendada primeiro, com " (Recomendado)" no fim do texto.
 - Resposta em texto livre volta como resultado da ferramenta.
 - Isto É o modo interativo: NÃO mude para modo auto só porque AskUserQuestion não existe. Só use auto se o usuário pediu auto/--auto.
+- NUNCA termine um turno com uma pergunta solta no texto: o dono pode estar em modo silêncio e só vê perguntas que chegam por `telegram_perguntar`.
 - Se a ferramenta retornar "sem resposta…" ou "bot offline", siga com a opção recomendada e marque como SUPOSIÇÃO no que entregar.
 
 Arquivos e avisos

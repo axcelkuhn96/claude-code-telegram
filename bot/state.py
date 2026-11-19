@@ -7,6 +7,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from bot import quiet as quiet_mod
 from bot import slots as slots_mod
 
 log = logging.getLogger(__name__)
@@ -26,6 +27,9 @@ class State:
     # prompt, ts, posted}]. Gravadas no launch e removidas ao fim normal; o que sobra no próximo
     # start foi interrompido e vira "⏸ interrompido" com botão "🔁 Reenviar".
     interrupted: list = field(default_factory=list)
+    # modo silêncio ("off" | "final" | "total", ver bot/quiet.py) e a fila do /resumo (últimos 50)
+    quiet: str = quiet_mod.DEFAULT_MODE
+    digest: list = field(default_factory=list)
 
 
 def _num_or_none(v: object) -> float | None:
@@ -100,6 +104,8 @@ def load(path: Path) -> State:
         else None,
         slots=slots_mod.validate(data.get("slots")),
         interrupted=_valid_interrupted(data.get("interrupted")),
+        quiet=quiet_mod.valid_mode(data.get("quiet")),
+        digest=quiet_mod.valid_digest(data.get("digest")),
     )
 
 

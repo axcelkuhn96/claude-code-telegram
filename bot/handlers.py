@@ -44,6 +44,7 @@ from telegram.ext import (
 from bot import files as files_mod
 from bot import hosted as hosted_mod
 from bot import pinned as pinned_mod
+from bot import quiet as quiet_mod
 from bot import rc as rc_mod
 from bot.pinned import PinnedStatus
 from bot import slots as slots_mod
@@ -92,6 +93,7 @@ STDERR_CHARS = 1500
 REPO = Path(__file__).resolve().parent.parent
 MCP_CONFIG = REPO / "deploy" / "mcp.json"
 SYSTEM_PROMPT_FILE = REPO / "deploy" / "telegram-system-prompt.md"
+HOSTED_PROMPT_FILE = REPO / "deploy" / "telegram-system-prompt-hosted.md"
 
 
 def load_system_prompt(path: Path = SYSTEM_PROMPT_FILE) -> str | None:
@@ -115,6 +117,9 @@ HELP = (
     "/parar — interrompe a execução da sessão ativa\n"
     "/historico [n] — últimas mensagens da sessão\n"
     "/status — estado do bot e da máquina\n"
+    "/silencio [off|final|total] — modo silêncio: final = só resultados finais; "
+    "total = só o que precisa de você (o resto vai pro /resumo)\n"
+    "/resumo — entrega e limpa o que ficou pendente no modo total\n"
     "/menu — mostra o teclado fixo\n"
     "/rc — 🛰 RC: sessões hospedadas (personal, também no claude.ai) e servidores; "
     "/rc server liga um servidor avulso; /rc parar encerra os servidores\n"
@@ -132,6 +137,8 @@ COMMANDS = [
     ("parar", "interromper execução"),
     ("status", "estado do bot"),
     ("menu", "teclado fixo"),
+    ("silencio", "modo silêncio (off/final/total)"),
+    ("resumo", "resumo do que ficou pendente"),
     ("rc", "Remote Control (personal)"),
     ("encerrar", "encerrar a sessão ativa"),
     ("fixar", "fixar a sessão ativa num atalho"),
@@ -159,6 +166,9 @@ KEYBOARD_ACTIONS = {
     "🔒 Trancar": "cmd_trancar",
     "📌 Fixar": "cmd_fixar",
 }
+RESUMO_CARD_CHARS = (
+    1500  # corpo de cada cartão do /resumo (o texto inteiro está no painel)
+)
 KB_REFRESH_MIN_S = 20.0
 STATUS_EVERY_S = 300.0  # barra fixada: renova uso/⏳/trava a cada 5 min
 ASK_ECHO_CHARS = 60
@@ -571,6 +581,7 @@ class Bot:
         self._kb_last = -KB_REFRESH_MIN_S
         self._kb_task: asyncio.Task | None = None
         self.system_prompt = load_system_prompt()
+        self.hosted_prompt = load_system_prompt(HOSTED_PROMPT_FILE)
         self.totp_secret = totp_secret or None  # sem segredo = sem trava (como antes)
         self.unlock_hours = unlock_hours
         self._totp_fails = 0
@@ -659,6 +670,14 @@ class Bot:
         }
         return self._status_snap
 
+    def _quiet_label(self) -> str:
+        """`final`, `total` ou `total·3` (3 itens na fila); vazio com o silêncio desligado."""
+        mode = self.quiet_mode
+        if mode == "off":
+            return ""
+        n = len(self.state.digest)
+        return f"{mode}·{n}" if mode == "total" and n else mode
+
     async def refresh_status(self) -> None:
         """Edita a mensagem fixada (📍 projeto · título · conta (% livre) ⏳ n; 🔒 se trancado)."""
         pinned = self._pinned_obj() if self.pinned_enabled else None
@@ -674,6 +693,7 @@ class Bot:
                 snap["usage"],
                 snap["working"],
                 self.is_locked(),
+                self._quiet_label(),
             )
         )
 
@@ -709,8 +729,23 @@ class Bot:
         u, c = update.effective_user, update.effective_chat
         return is_authorized(self.state, u.id if u else None, c.type if c else "")
 
-    async def send(self, chat_id: int, text: str, markup=None, parse_mode=None):
+    @property
+    def quiet_mode(self) -> str:
+        return quiet_mod.valid_mode(self.state.quiet)
+
+    def _quiet_extra(self, silent: bool) -> dict:
+        """`disable_notification` só no modo silêncio e só para mensagens não urgentes."""
+        return (
+            {"disable_notification": True}
+            if silent and self.quiet_mode != "off"
+            else {}
+        )
+
+    async def send(
+        self, chat_id: int, text: str, markup=None, parse_mode=None, silent=False
+    ):
         extra = {"parse_mode": parse_mode} if parse_mode else {}
+        extra.update(self._quiet_extra(silent))
         try:
             return await tg_call(
                 self.tg.send_message, chat_id, text, reply_markup=markup, **extra
@@ -719,23 +754,27 @@ class Bot:
             log.warning("envio falhou (%s)", _safe_err(e))
             return None
 
-    async def send_long(self, chat_id: int, text: str) -> bool:
+    async def send_long(self, chat_id: int, text: str, silent: bool = False) -> bool:
         ok = True
         for part in split(text) or [text]:
-            ok = (await self.send(chat_id, part)) is not None and ok
+            ok = (await self.send(chat_id, part, silent=silent)) is not None and ok
         return ok
 
-    async def send_html(self, chat_id: int, html_text: str, markup=None) -> bool:
+    async def send_html(
+        self, chat_id: int, html_text: str, markup=None, silent: bool = False
+    ) -> bool:
         """HTML já convertido, partido em ≤ 4096 sem quebrar tags; o markup vai na última parte.
         Parte que o Telegram recusar ("can't parse entities") é reenviada como texto puro."""
         parts = split_html(html_text)
         ok = True
         for i, part in enumerate(parts):
             mk = markup if i == len(parts) - 1 else None
-            ok = await self._send_html_part(chat_id, part, mk) and ok
+            ok = await self._send_html_part(chat_id, part, mk, silent) and ok
         return ok
 
-    async def _send_html_part(self, chat_id: int, part: str, markup) -> bool:
+    async def _send_html_part(
+        self, chat_id: int, part: str, markup, silent: bool = False
+    ) -> bool:
         try:
             await tg_call(
                 self.tg.send_message,
@@ -743,6 +782,7 @@ class Bot:
                 part,
                 reply_markup=markup,
                 parse_mode="HTML",
+                **self._quiet_extra(silent),
             )
             return True
         except BadRequest as e:
@@ -750,14 +790,18 @@ class Bot:
                 log.warning("envio HTML recusado (%s)", _safe_err(e))
                 return False
             log.warning("HTML recusado pelo Telegram; reenviando como texto")
-            return (await self.send(chat_id, html_to_plain(part), markup)) is not None
+            return (
+                await self.send(chat_id, html_to_plain(part), markup, silent=silent)
+            ) is not None
         except TelegramError as e:
             log.warning("envio HTML falhou (%s)", _safe_err(e))
             return False
 
-    async def send_markdown(self, chat_id: int, md: str, markup=None) -> bool:
+    async def send_markdown(
+        self, chat_id: int, md: str, markup=None, silent: bool = False
+    ) -> bool:
         """Markdown do Claude -> HTML do Telegram -> envio (split e fallback incluídos)."""
-        return await self.send_html(chat_id, md_to_tg_html(md), markup)
+        return await self.send_html(chat_id, md_to_tg_html(md), markup, silent)
 
     async def send_reply_file(
         self, chat_id: int, text: str, sid: str, label: str
@@ -919,6 +963,8 @@ class Bot:
             ("status", self.cmd_status),
             ("historico", self.cmd_historico),
             ("menu", self.cmd_menu),
+            ("silencio", self.cmd_silencio),
+            ("resumo", self.cmd_resumo),
             ("rc", self.cmd_rc),
             ("destravar", self.cmd_destravar),
             ("trancar", self.cmd_trancar),
@@ -1038,6 +1084,7 @@ class Bot:
         if (
             self.tg is None
             or self.state.owner_id is None
+            or quiet_mod.policy("echo", self.quiet_mode) == "drop"
             or (self._kb_task is not None and not self._kb_task.done())
             or self._slot_labels() == self._kb_sent
         ):
@@ -1051,9 +1098,138 @@ class Bot:
         if wait > 0:
             await asyncio.sleep(wait)
         owner = self.state.owner_id
-        if owner is None or self.is_locked() or self._slot_labels() == self._kb_sent:
+        if (
+            owner is None
+            or self.is_locked()
+            or quiet_mod.policy("echo", self.quiet_mode) == "drop"
+            or self._slot_labels() == self._kb_sent
+        ):
             return
         await self.send_keyboard(owner, "⌨️")
+
+    # -- modo silêncio (/silencio, /resumo; política em bot/quiet.py) --
+
+    def _echo_ok(self) -> bool:
+        """Eco/progresso/aviso intermediário só sai com o silêncio desligado."""
+        return quiet_mod.policy("echo", self.quiet_mode) != "drop"
+
+    async def _enqueue(
+        self, kind: str, text: str, sid: str | None, project: str | None
+    ) -> None:
+        """Guarda na fila do /resumo (em memória + state.json, últimos 50)."""
+        title = ""
+        if sid and project:
+            title = await asyncio.to_thread(self._title_sync, sid, project)
+        item = quiet_mod.make_item(
+            time.time(), self._label(project), title, kind, text, sid
+        )
+        self.state.digest = quiet_mod.enqueue(self.state.digest, item)
+        self.save()  # persiste e atualiza a barra (🔕total·n)
+
+    async def _deliver(
+        self,
+        kind: str,
+        md: str,
+        sid: str | None,
+        project: str | None,
+        chat_id: int | None = None,
+    ) -> bool:
+        """Entrega `md` (markdown) conforme a política do modo: envia (com "📖 Ver no painel"),
+        envia sem notificar ou vai à fila. True = foi ao chat; False = fila/sem destino."""
+        owner = chat_id if chat_id is not None else self.state.owner_id
+        if owner is None:
+            return False
+        action = quiet_mod.policy(kind, self.quiet_mode)
+        if action == "queue":
+            await self._enqueue(kind, md, sid, project)
+            return False
+        await self.send_markdown(
+            owner, md, self.panel_markup(sid), silent=action == "silent"
+        )
+        return True
+
+    _QUIET_INFO = {
+        "off": "tudo chega como sempre.",
+        "final": "só resultados finais e o que precisa de você (perguntas, diálogos, "
+        "limites, erros). Sem progresso nem ecos.",
+        "total": "só o que precisa de você; resultados e avisos ficam na fila — /resumo "
+        "entrega e limpa.",
+    }
+
+    def _quiet_text(self, head: str) -> str:
+        pend = len(self.state.digest)
+        extra = f"\n📬 {pend} pendente(s) — /resumo" if pend else ""
+        return (
+            f"🔕 {head}: {self.quiet_mode} — {self._QUIET_INFO[self.quiet_mode]}{extra}"
+        )
+
+    async def set_quiet(self, chat_id: int, mode: str) -> None:
+        self.state.quiet = quiet_mod.valid_mode(mode)
+        self.save()
+        self.request_keyboard_refresh()
+        await self.send(chat_id, self._quiet_text("Silêncio agora"))
+
+    @owner_only
+    async def cmd_silencio(self, update: Update, ctx) -> None:
+        chat_id = update.effective_chat.id
+        args = list(getattr(ctx, "args", None) or [])
+        if not args:
+            markup = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("Off", callback_data="sl:off"),
+                        InlineKeyboardButton("Final", callback_data="sl:final"),
+                        InlineKeyboardButton("Total", callback_data="sl:total"),
+                    ]
+                ]
+            )
+            await self.send(chat_id, self._quiet_text("Silêncio"), markup)
+            return
+        mode = args[0].strip().lower()
+        if mode not in quiet_mod.MODES:
+            await self.send(chat_id, "Uso: /silencio off | final | total")
+            return
+        await self.set_quiet(chat_id, mode)
+
+    @owner_only
+    async def cmd_resumo(self, update: Update, ctx) -> None:
+        chat_id = update.effective_chat.id
+        items = list(self.state.digest)
+        if not items:
+            await self.send(chat_id, "📭 Nada pendente.")
+            return
+        await self.send(
+            chat_id, f"📬 Resumo: {len(items)} item(ns), do mais antigo ao mais novo"
+        )
+        done: set[int] = set()
+        for it in items:
+            if await self._send_card(chat_id, it):
+                done.add(id(it))
+        self.state.digest = [e for e in self.state.digest if id(e) not in done]
+        self.save()
+
+    async def _send_card(self, chat_id: int, it: dict) -> bool:
+        def plain(s: str) -> str:
+            return re.sub(r"[*_`\[\]]", "", s)
+
+        when = datetime.fromtimestamp(it["ts"]).astimezone().strftime("%H:%M")
+        head = " · ".join(
+            p
+            for p in (
+                plain(it["project_label"]),
+                plain(_clip(it["title"], 60)),
+                when,
+                "🔔" if it["kind"] == "notify" else "",
+            )
+            if p
+        )
+        body = _clip_keep_lines(it["text"], RESUMO_CARD_CHARS)
+        return await self.send_markdown(
+            chat_id,
+            f"**{head}**\n\n{body}",
+            self.panel_markup(it["session_id"]),
+            silent=True,
+        )
 
     @owner_only
     async def cmd_menu(self, update: Update, ctx) -> None:
@@ -1649,8 +1825,10 @@ class Bot:
                 "pid": o.pid,
                 "title": getattr(o, "title", "") or "",
                 "mtime": _aware(o.started_at),
-                "pc": o.session_id not in running,
+                # sessão hospedada (tmux do bot) não é "do PC": o bot a controla
+                "pc": o.session_id not in running and o.session_id not in self.hosts,
                 "bot": o.session_id in running,
+                "hosted": o.session_id in self.hosts,
             }
         for s in self.bot_sessions.values():
             e = out.get(s.session_id)
@@ -1664,7 +1842,21 @@ class Bot:
                 "pc": False,
                 "bot": s.session_id
                 in running,  # rodou aqui; só trabalha se ainda está rodando
+                "hosted": s.session_id in self.hosts,
             }
+        for (
+            sid,
+            h,
+        ) in self.hosts.items():  # readotadas no start: sem registro nem bot_sessions
+            if sid not in out:
+                out[sid] = {
+                    "cwd": h.project,
+                    "account": h.account,
+                    "mtime": self.now(),
+                    "pc": False,
+                    "bot": sid in running,  # turno aberto (do Telegram ou do claude.ai)
+                    "hosted": True,
+                }
         return out
 
     def _open_sessions_sync(self) -> list[dict]:
@@ -1979,6 +2171,12 @@ class Bot:
             else "🔓 sem TOTP configurado",
             await power_status(),
         ]
+        if self.quiet_mode != "off":
+            pend = len(st.digest)
+            lines.append(
+                f"🔕 Silêncio: {self.quiet_mode}"
+                + (f" · {pend} pendente(s) — /resumo" if pend else "")
+            )
         login = await self._login_line()
         if login:
             lines.insert(3, login)
@@ -2269,7 +2467,12 @@ class Bot:
                 hosted_mod.ENV_ACCOUNT: prof.name,
             }
             argv = hosted_mod.claude_argv(
-                self.cfg.claude_bin, sid, new, rc_name, MCP_CONFIG
+                self.cfg.claude_bin,
+                sid,
+                new,
+                rc_name,
+                MCP_CONFIG,
+                self.hosted_prompt,
             )
             ok, _ = await asyncio.to_thread(
                 self.tmux.start, name, project, tmux_env, argv
@@ -2396,7 +2599,7 @@ class Bot:
         turn = host.ours
         if ev.kind == "url":
             host.rc_url = ev.text
-            if not host.url_announced and owner is not None:
+            if not host.url_announced and owner is not None and self._echo_ok():
                 host.url_announced = True
                 url = html.escape(ev.text or "", quote=True)
                 await self.send(
@@ -2416,7 +2619,10 @@ class Bot:
                 turn.bound = host.turn_ours = True
                 return
             host.turn_ours = False
-            if ev.human and ev.text and owner is not None:
+            self.feeds.start(
+                host.sid
+            )  # turno de fora (claude.ai…): o painel acompanha ao vivo
+            if ev.human and ev.text and owner is not None and self._echo_ok():
                 await self.send(
                     owner,
                     f"{VIA_RC} {self._host_prefix(host)}👤 "
@@ -2442,12 +2648,28 @@ class Bot:
                     )
                 )
             return
+        if ev.kind == "tool":  # turno de fora: só alimenta o painel (sem mensagem)
+            self.feeds.add(host.sid, "tool", tool=ev.tool, detail=ev.detail)
+        elif ev.kind == "text":
+            self.feeds.add(host.sid, "text", text=ev.text)
         if ev.kind == "end":  # turno que não veio do Telegram (claude.ai, notificação…)
+            self.feeds.add(host.sid, "result", text=ev.text)
+            self.feeds.finish(
+                host.sid,
+                {
+                    "text": ev.text or "",
+                    "cost_usd": None,
+                    "duration_ms": ev.duration_ms,
+                    "is_error": ev.is_error,
+                },
+            )
             self._host_dialog_clear(host)
             if ev.text and owner is not None:
-                await self.send_markdown(
-                    owner,
+                await self._deliver(
+                    "urgent" if ev.is_error else "final",
                     f"🛰 {self._host_prefix(host)}{'❌ ' if ev.is_error else ''}{ev.text}",
+                    host.sid,
+                    host.project,
                 )
             self.request_keyboard_refresh()
             self.request_status_refresh()
@@ -2696,6 +2918,8 @@ class Bot:
             await self.rc_callback(chat_id, m.group(1))
         elif m := re.fullmatch(r"hd:([0-9a-f]{8}):(\d{1,6}):(\d{1,2}|ent|esc)", data):
             await self.host_answer(chat_id, m.group(1), int(m.group(2)), m.group(3))
+        elif m := re.fullmatch(r"sl:(off|final|total)", data):
+            await self.set_quiet(chat_id, m.group(1))
         elif data == "e:x":
             await self.send(chat_id, "Cancelado.")
         elif m := re.fullmatch(r"e:([0-9a-f-]{36})", data):
@@ -2967,7 +3191,8 @@ class Bot:
         self.request_status_refresh()  # ⏳ n na barra
 
         progress = Progress(self.tg, chat_id)
-        await progress.start("⏳ trabalhando…")
+        if self._echo_ok():  # no silêncio não há mensagem de progresso (nem edições)
+            await progress.start("⏳ trabalhando…")
         result = None
         real_sid = None
         began = self.clock()
@@ -3059,16 +3284,19 @@ class Bot:
             run.timed_out,
             stopped,
         )
-        await self.send_markdown(
-            chat_id,
-            final,
-            self.panel_markup(real_sid if real_sid and is_uuid(real_sid) else sid),
+        view_sid = real_sid if real_sid and is_uuid(real_sid) else sid
+        # resultado normal = "final" (silêncio: pode ir à fila); erro, timeout e /parar = urgente
+        kind = (
+            "final"
+            if result and not result.is_error and not (stopped or run.timed_out)
+            else "urgent"
         )
-        if result and result.text and len(result.text) > LONG_REPLY_CHARS:
+        delivered = await self._deliver(kind, final, view_sid, project, chat_id)
+        if delivered and result and result.text and len(result.text) > LONG_REPLY_CHARS:
             await self.send_reply_file(chat_id, result.text, sid, pfx_label)
         self.request_keyboard_refresh()  # a sessão deixou de estar ⏳
         self.request_status_refresh()
-        if result and not (stopped or run.timed_out):
+        if self._echo_ok() and result and not (stopped or run.timed_out):
             took_ms = (
                 result.duration_ms
                 if result.duration_ms is not None
@@ -3097,7 +3325,18 @@ class Bot:
         owner = self.state.owner_id
         if owner is None:
             return False
-        return await self.send_long(owner, f"{origin_prefix(origem)} {texto}")
+        text = f"{origin_prefix(origem)} {texto}"
+        action = quiet_mod.policy("notify", self.quiet_mode)
+        if action == "queue":
+            cwd, sid = origem.get("cwd"), origem.get("session_id")
+            await self._enqueue(
+                "notify",
+                texto,
+                sid if isinstance(sid, str) else None,
+                cwd if isinstance(cwd, str) else None,
+            )
+            return True
+        return await self.send_long(owner, text, silent=action == "silent")
 
     async def ask(
         self, pergunta: str, opcoes: list[str], timeout_s: float, origem: dict
@@ -3252,6 +3491,7 @@ class Bot:
                         "short": short(sid),
                         "project_label": self._label(e["cwd"]),
                         "pc": e["pc"],
+                        "hosted": bool(e.get("hosted")),
                         "since": e["mtime"].isoformat(),
                     }
                 )
@@ -3271,6 +3511,8 @@ class Bot:
             "account": st.account,
             "session_id": st.session_id,
             "running": self.runs.running(),
+            "hosted": list(self.hosts),  # sessões hospedadas (Remote Control) vivas
+            "quiet": self.quiet_mode,
             "power": {"ac": ac, "battery": battery},
             "slots": {
                 k: {
@@ -3367,6 +3609,7 @@ class Bot:
             "active": sid == self.state.session_id,
             "running": is_bot,
             "pc": pc,
+            "hosted": bool(e and e.get("hosted")),
             "working": working,
             "open": e is not None,
         }

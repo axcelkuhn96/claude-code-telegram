@@ -200,6 +200,8 @@ async def test_prompt_sobe_o_tmux_cola_e_a_resposta_volta(tmp_path, monkeypatch)
         f"--remote-control={handlers.hosted_mod.rc_session_name(project)}",
         "--session-id",
         SID,
+        "--append-system-prompt",
+        handlers.load_system_prompt(handlers.HOSTED_PROMPT_FILE),
         "--mcp-config",
         str(handlers.MCP_CONFIG),
     ]

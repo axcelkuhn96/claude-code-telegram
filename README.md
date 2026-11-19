@@ -159,6 +159,8 @@ Run by hand without systemd: `.venv/bin/python -m bot.main`. Tests: `.venv/bin/p
 | `/status` | Project, account, session, running runs, uptime, linger, sleep mode, TOTP state |
 | `/historico [n]` | Last messages of the active session (default 6, max 30) |
 | `/menu` | Show the persistent keyboard |
+| `/silencio [off\|final\|total]` | Quiet mode, saved in `state.json`. `final`: no progress, no echoes or intermediate notices, only final results and anything that needs you (asks, terminal dialogs, limit prompts, errors, lock); `total`: only what needs you, the rest is queued (last 50). Non-urgent messages are sent without notification |
+| `/resumo` | Send the queued digest (one card per item, oldest first) and clear it |
 | `/destravar <code>` | Unlock with the 6-digit TOTP code (only if `TOTP_SECRET` is set) |
 | `/trancar` | Lock now (also the "Trancar" keyboard button); does not interrupt running runs |
 | `/fixar [n]` | Pin the active session as keyboard shortcut 1-4 |

@@ -1027,6 +1027,7 @@ async def test_api_sessions_select_session_e_new_session(tmp_path, monkeypatch):
         "active": True,
         "running": False,
         "pc": False,
+        "hosted": False,
         "working": False,
         "open": False,
     }
@@ -1245,6 +1246,7 @@ async def test_api_sessions_scope_open_de_qualquer_projeto(tmp_path, monkeypatch
         "active": True,
         "running": False,
         "pc": True,
+        "hosted": False,
         "working": True,
         "open": True,
     }

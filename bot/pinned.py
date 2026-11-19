@@ -55,8 +55,10 @@ def status_line(
     usage: AccountUsage | None,
     working: int = 0,
     locked: bool = False,
+    quiet: str = "",
 ) -> str:
-    """Ex.: `📍 project-a · Refatorar autenticação · work (91% livre) ⏳ 2`; `🔒` na frente se travado."""
+    """Ex.: `📍 project-a · Refatorar autenticação · work (91% livre) 🔕final ⏳ 2`; `🔒` na frente
+    se travado; `🔕<modo>` quando o modo silêncio não é `off` (`quiet` já vem como rótulo)."""
     parts: list[str] = []
     if project_label:
         parts.append(project_label)
@@ -66,7 +68,9 @@ def status_line(
         livre = _percent_livre(usage)
         parts.append(account if livre is None else f"{account} ({livre}% livre)")
     prefix = "🔒 " if locked else ""
-    suffix = f" ⏳ {working}" if working > 0 else ""
+    suffix = (f" 🔕{quiet}" if quiet else "") + (
+        f" ⏳ {working}" if working > 0 else ""
+    )
     body = "📍 " + (SEP.join(parts) if parts else "sem projeto")
     return prefix + _clip(body, LINE_MAX - len(prefix) - len(suffix)) + suffix
 
