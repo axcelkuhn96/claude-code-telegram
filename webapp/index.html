@@ -1,0 +1,1582 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Painel do Claude</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+/* ---------- tokens ---------- */
+:root {
+  --page: var(--tg-theme-secondary-bg-color, #eceff3);
+  --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #ffffff));
+  --bar-bg: var(--tg-theme-header-bg-color, var(--tg-theme-bg-color, #ffffff));
+  --text: var(--tg-theme-text-color, #15191d);
+  --hint: var(--tg-theme-hint-color, #5f6b76);
+  --accent: var(--tg-theme-accent-text-color, var(--tg-theme-link-color, #1b6fb3));
+  --btn: var(--tg-theme-button-color, #1b6fb3);
+  --btn-text: var(--tg-theme-button-text-color, #ffffff);
+  --danger: var(--tg-theme-destructive-text-color, #c23a3a);
+  --sep: color-mix(in srgb, var(--text) 12%, transparent);
+  --track: color-mix(in srgb, var(--text) 13%, transparent);
+  --ok: #217a4b;
+  --warn: #a86400;
+  --crit: #c23a3a;
+  --ok-bar: #2e9e63;
+  --warn-bar: #e09a12;
+  --crit-bar: #d64545;
+  --r-card: 14px;
+  --r-bubble: 18px;
+  --tap: 48px;
+  --pad: 16px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+:root[data-scheme="dark"] {
+  --page: var(--tg-theme-secondary-bg-color, #121417);
+  --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #1d2024));
+  --bar-bg: var(--tg-theme-header-bg-color, var(--tg-theme-bg-color, #1d2024));
+  --text: var(--tg-theme-text-color, #e8ecef);
+  --hint: var(--tg-theme-hint-color, #8f9aa5);
+  --accent: var(--tg-theme-accent-text-color, var(--tg-theme-link-color, #62b3f5));
+  --btn: var(--tg-theme-button-color, #1f6fb8);
+  --danger: var(--tg-theme-destructive-text-color, #ff7b7b);
+  --ok: #55c98a;
+  --warn: #f0b440;
+  --crit: #ff7b7b;
+  --ok-bar: #4cc38a;
+  --warn-bar: #f0b440;
+  --crit-bar: #ff6b6b;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--page);
+  color: var(--text);
+  font: 16px/1.4 var(--font);
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  overflow: hidden;
+}
+button, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- shell ---------- */
+#app {
+  height: var(--tg-viewport-stable-height, 100dvh);
+  display: flex;
+  flex-direction: column;
+}
+#top {
+  background: var(--bar-bg);
+  padding: 10px var(--pad);
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  border-bottom: 1px solid var(--sep);
+}
+#top .id { flex: 1; min-width: 0; }
+#top .proj { font-weight: 650; font-size: 17px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#top .sub { color: var(--hint); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#top .side { text-align: right; font-size: 13px; color: var(--hint); flex: none; }
+#top .side .low { color: var(--danger); font-weight: 600; }
+.live-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--ok-bar); margin-right: 6px; animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.78); } }
+
+#views { flex: 1; min-height: 0; position: relative; }
+.view { position: absolute; inset: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.pad { padding: var(--pad); display: grid; gap: 12px; align-content: start; }
+
+#tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  background: var(--bar-bg);
+  border-top: 1px solid var(--sep);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+#tabs button {
+  position: relative;
+  background: none; border: 0;
+  min-height: 58px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  color: var(--hint);
+  font-size: 12.5px; font-weight: 550;
+}
+#tabs button svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#tabs button[aria-selected="true"] { color: var(--accent); }
+#tabs button[aria-selected="true"]::before { content: ""; position: absolute; top: 0; left: 28%; right: 28%; height: 3px; border-radius: 0 0 3px 3px; background: var(--accent); }
+#tabs .badge { position: absolute; top: 9px; left: calc(50% + 8px); width: 10px; height: 10px; border-radius: 50%; background: var(--ok-bar); border: 2px solid var(--bar-bg); box-sizing: content-box; animation: pulse 1.6s ease-in-out infinite; }
+
+#tabs .count { position: absolute; top: 5px; left: calc(50% + 6px); min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--warn-bar); color: #1b1300; font: 700 12px/20px var(--font); text-align: center; font-variant-numeric: tabular-nums; border: 2px solid var(--bar-bg); box-sizing: content-box; }
+
+/* ---------- cards & buttons ---------- */
+.card {
+  display: block; width: 100%; text-align: left;
+  background: var(--card);
+  border: 1.5px solid transparent;
+  border-radius: var(--r-card);
+  padding: 14px 16px;
+  box-shadow: 0 1px 0 var(--sep);
+}
+button.card { min-height: var(--tap); }
+button.card:active { background: color-mix(in srgb, var(--card) 92%, var(--text)); }
+.card.is-active { border-color: var(--accent); }
+.card.off { opacity: .62; }
+.card[aria-busy="true"] { opacity: .6; pointer-events: none; }
+
+.btn {
+  min-height: var(--tap); padding: 0 20px;
+  border: 0; border-radius: 12px;
+  background: var(--btn); color: var(--btn-text);
+  font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn.ghost { background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); }
+.btn.danger { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 600; background: color-mix(in srgb, var(--hint) 18%, transparent); color: var(--text); white-space: nowrap; }
+.chip.ok { background: color-mix(in srgb, var(--ok-bar) 20%, transparent); color: var(--ok); }
+.chip.warn { background: color-mix(in srgb, var(--warn-bar) 22%, transparent); color: var(--warn); }
+.chip.crit { background: color-mix(in srgb, var(--crit-bar) 18%, transparent); color: var(--crit); }
+.chip svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---------- contas ---------- */
+.acc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.acc-name { font-size: 18px; font-weight: 650; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.meter { display: grid; grid-template-columns: 54px 1fr auto; align-items: center; column-gap: 10px; row-gap: 2px; margin-top: 10px; }
+.meter .lbl { font-size: 14px; color: var(--hint); }
+.meter .pct { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 3.2ch; text-align: right; line-height: 1; }
+.meter .bar { height: 14px; border-radius: 7px; background: var(--track); overflow: hidden; }
+.meter .fill { height: 100%; border-radius: 7px; background: var(--ok-bar); transition: width .5s ease; }
+.meter[data-sev="warn"] .fill { background: var(--warn-bar); }
+.meter[data-sev="crit"] .fill { background: var(--crit-bar); }
+.meter[data-sev="warn"] .pct { color: var(--warn); }
+.meter[data-sev="crit"] .pct { color: var(--crit); }
+.meter .reset { grid-column: 2 / 4; font-size: 13px; color: var(--hint); margin-bottom: 2px; }
+.hintline { color: var(--hint); font-size: 13px; text-align: center; margin: 4px 0 0; }
+
+/* ---------- sessoes ---------- */
+.toolbar { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.field > span { font-size: 13px; color: var(--hint); }
+select.sel {
+  width: 100%; min-height: var(--tap); padding: 0 14px;
+  border-radius: 12px; border: 1.5px solid var(--sep);
+  background: var(--card); color: var(--text);
+}
+.sess-prompt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 16px; line-height: 1.35; overflow-wrap: anywhere; }
+.sess-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 8px; font-size: 13px; color: var(--hint); }
+.sess-meta .sid { font-family: var(--mono); font-size: 12.5px; }
+
+/* ---------- agora ---------- */
+.agora-bar { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+.btn.icon { width: var(--tap); padding: 0; }
+.btn.icon.spin svg { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.sec { display: grid; gap: 8px; }
+.sec-h { margin: 6px 2px 0; font-size: 14px; font-weight: 650; color: var(--hint); display: flex; align-items: center; gap: 8px; }
+.sec-h .n { font-weight: 600; font-variant-numeric: tabular-nums; }
+.ag-top { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.ag-proj { font-weight: 650; font-size: 16px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-age { font-size: 13px; color: var(--hint); flex: none; font-variant-numeric: tabular-nums; }
+.card.work { border-color: color-mix(in srgb, var(--warn-bar) 55%, transparent); }
+.ptr { height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; color: var(--hint); font-size: 13px; transition: height .15s ease; }
+.ptr.pulling { transition: none; }
+
+/* ---------- sheet ---------- */
+#sheet { position: fixed; inset: 0; z-index: 25; display: flex; align-items: flex-end; justify-content: center; }
+#sheet .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.45); animation: fade .18s ease; }
+#sheet .panel { position: relative; width: 100%; max-width: 560px; max-height: 88%; display: flex; flex-direction: column; background: var(--page); border-radius: 20px 20px 0 0; box-shadow: 0 -8px 32px rgba(0,0,0,.3); animation: rise .22s ease; padding-bottom: env(safe-area-inset-bottom, 0px); }
+@keyframes fade { from { opacity: 0; } }
+@keyframes rise { from { transform: translateY(40px); opacity: 0; } }
+.sheet-h { display: flex; align-items: center; gap: 8px; padding: 16px var(--pad) 8px; }
+.sheet-h h2 { margin: 0; font-size: 18px; font-weight: 650; flex: 1; }
+.sheet-h h2:focus { outline: none; }
+.sheet-x { width: var(--tap); height: var(--tap); border: 0; border-radius: 50%; background: none; color: var(--hint); display: grid; place-items: center; margin-right: -10px; }
+.sheet-x svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.sheet-body { overflow-y: auto; overscroll-behavior: contain; padding: 4px var(--pad) 12px; display: grid; gap: 8px; align-content: start; }
+.sheet-body h3 { margin: 10px 2px 0; font-size: 13px; font-weight: 650; color: var(--hint); text-transform: uppercase; letter-spacing: .04em; }
+.pick { position: relative; display: flex; align-items: center; gap: 12px; min-height: var(--tap); padding: 8px 14px; background: var(--card); border: 1.5px solid transparent; border-radius: 12px; box-shadow: 0 1px 0 var(--sep); cursor: pointer; }
+.pick input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.pick .dot { width: 20px; height: 20px; flex: none; border-radius: 50%; border: 2px solid var(--hint); display: grid; place-items: center; }
+.pick .dot::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); transform: scale(0); transition: transform .12s ease; }
+.pick:has(input:checked) { border-color: var(--accent); }
+.pick:has(input:checked) .dot { border-color: var(--accent); }
+.pick:has(input:checked) .dot::after { transform: scale(1); }
+.pick:has(input:focus-visible) { outline: 3px solid var(--accent); outline-offset: 2px; }
+.pick:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+.pick .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.pick .sub { font-size: 13px; color: var(--hint); flex: none; font-variant-numeric: tabular-nums; }
+.pick .sub.warn { color: var(--warn); font-weight: 600; }
+.pick .sub.crit { color: var(--crit); font-weight: 600; }
+.sheet-f { display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; padding: 10px var(--pad) 14px; border-top: 1px solid var(--sep); }
+
+/* ---------- conversa ---------- */
+.chatview { display: flex; flex-direction: column; overflow: hidden; }
+.msgs { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px var(--pad) 8px; display: flex; flex-direction: column; -webkit-overflow-scrolling: touch; }
+#list { display: flex; flex-direction: column; gap: 10px; margin-top: auto; }
+.older { text-align: center; padding: 4px 0 12px; font-size: 13px; color: var(--hint); }
+.older .btn { min-height: 40px; font-size: 14px; }
+
+.msg { display: flex; flex-direction: column; max-width: 88%; }
+.msg .bubble { padding: 10px 14px; border-radius: var(--r-bubble); overflow-wrap: anywhere; font-size: 16px; line-height: 1.42; min-width: 0; }
+.msg .meta { font-size: 12px; color: var(--hint); margin: 3px 6px 0; }
+.msg.user { align-self: flex-end; align-items: flex-end; }
+.msg.user .bubble { background: var(--btn); color: var(--btn-text); border-bottom-right-radius: 6px; }
+.msg.bot { align-self: flex-start; }
+.msg.bot .bubble { background: var(--card); border-bottom-left-radius: 6px; box-shadow: 0 1px 0 var(--sep); }
+.bubble.clamp { max-height: 26em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.more { background: none; border: 0; color: var(--accent); font-size: 14px; font-weight: 600; min-height: 40px; padding: 0 6px; align-self: flex-start; }
+.msg.user .more { align-self: flex-end; }
+
+/* markdown (renderizador próprio, só DOM) */
+.md { min-width: 0; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 .6em; }
+.md .md-h { margin: .8em 0 .35em; font-weight: 700; line-height: 1.25; }
+.md .md-h.h1 { font-size: 1.22em; }
+.md .md-h.h2 { font-size: 1.14em; }
+.md .md-h.h3 { font-size: 1.07em; }
+.md ul, .md ol { margin: 0 0 .6em; padding-left: 1.45em; }
+.md li { margin: .15em 0; }
+.md li > p { margin: 0 0 .3em; }
+.md li > ul, .md li > ol { margin: .2em 0 .2em; }
+.md li.task { list-style: none; margin-left: -1.2em; }
+.md .tk { display: inline-block; width: 1.2em; }
+.md li.task > .tk + p { display: inline; }
+.md blockquote { margin: 0 0 .6em; padding: .1em 0 .1em .85em; border-left: 3px solid color-mix(in srgb, var(--accent) 60%, transparent); color: var(--hint); }
+.md hr { border: 0; border-top: 1px solid var(--sep); margin: .8em 0; }
+.md a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; word-break: break-word; }
+.msg.user .md a { color: inherit; }
+.md code.ic { font: .88em/1.3 var(--mono); padding: .08em .35em; border-radius: 5px; background: color-mix(in srgb, var(--text) 10%, transparent); overflow-wrap: anywhere; }
+.msg.user .md code.ic { background: rgba(0,0,0,.24); }
+.md del { opacity: .75; }
+.codeblock { margin: .5em 0 .7em; border-radius: 10px; background: color-mix(in srgb, var(--text) 8%, transparent); overflow: hidden; }
+.msg.user .codeblock { background: rgba(0,0,0,.24); }
+.cb-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px 0 12px; min-height: 40px; border-bottom: 1px solid var(--sep); }
+.cb-lang { font: 12px var(--mono); color: var(--hint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg.user .cb-lang { color: inherit; opacity: .8; }
+.copy { background: none; border: 0; min-height: 40px; min-width: 64px; padding: 0 12px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--accent); }
+.msg.user .copy { color: inherit; }
+.codeblock pre { margin: 0; padding: 10px 12px; overflow-x: auto; font: 13px/1.5 var(--mono); white-space: pre; tab-size: 2; -webkit-overflow-scrolling: touch; }
+.codeblock pre code { font: inherit; }
+.tablewrap { margin: .5em 0 .7em; overflow-x: auto; border: 1px solid var(--sep); border-radius: 10px; -webkit-overflow-scrolling: touch; }
+.tablewrap table { border-collapse: collapse; font-size: 14px; line-height: 1.35; min-width: 100%; }
+.tablewrap th, .tablewrap td { padding: 7px 11px; border-bottom: 1px solid var(--sep); text-align: left; vertical-align: top; min-width: 5.5em; overflow-wrap: normal; word-break: normal; }
+.tablewrap th { font-weight: 650; background: color-mix(in srgb, var(--text) 7%, transparent); white-space: nowrap; }
+.tablewrap tr:last-child td { border-bottom: 0; }
+.tablewrap [data-a="center"] { text-align: center; }
+.tablewrap [data-a="right"] { text-align: right; }
+
+.msg.tool { align-self: stretch; max-width: 100%; }
+.tool-line { width: 100%; text-align: left; background: color-mix(in srgb, var(--text) 6%, transparent); border: 0; border-radius: 10px; padding: 8px 12px; min-height: 40px; font-size: 13px; color: var(--hint); display: flex; gap: 8px; align-items: baseline; }
+.tool-line b { color: var(--text); font-weight: 600; flex: none; }
+.tool-line span { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.tool-line::after { content: "▸"; flex: none; margin-left: auto; }
+.tool-line[aria-expanded="true"]::after { content: "▾"; }
+.tool-line[aria-expanded="true"] span { display: none; }
+.tool-full { margin: 4px 0 0; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--text) 8%, transparent); font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow: auto; }
+
+#live { margin: 0 var(--pad) 8px; padding: 10px 12px; border-radius: var(--r-card); background: var(--card); box-shadow: 0 1px 0 var(--sep), 0 0 0 1.5px color-mix(in srgb, var(--ok-bar) 55%, transparent); }
+#live.done { box-shadow: 0 1px 0 var(--sep), 0 0 0 1.5px var(--sep); }
+#live.err { box-shadow: 0 1px 0 var(--sep), 0 0 0 1.5px color-mix(in srgb, var(--crit-bar) 70%, transparent); }
+.live-row { display: flex; align-items: center; gap: 10px; }
+.live-title { font-weight: 650; font-size: 15px; flex: 1; min-width: 0; }
+.live-title small { font-weight: 500; color: var(--hint); font-size: 13px; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.live-last { margin-top: 4px; font-size: 14px; color: var(--hint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-steps { margin: 8px 0 0; padding: 0; list-style: none; max-height: 28vh; overflow-y: auto; font-size: 13px; display: grid; gap: 4px; }
+.live-steps li { display: flex; gap: 8px; align-items: baseline; color: var(--hint); }
+.live-steps li b { color: var(--text); font-weight: 600; flex: none; }
+.live-steps li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); min-width: 0; }
+.live-btn { min-height: 44px; padding: 0 14px; border-radius: 10px; border: 0; background: none; color: var(--accent); font-weight: 600; font-size: 14px; }
+.live-btn.stop { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+
+.chat-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 8px var(--pad); background: var(--bar-bg); border-bottom: 1px solid var(--sep); }
+.chat-acts[aria-busy="true"] { opacity: .6; pointer-events: none; }
+.chat-note { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--hint); text-align: center; }
+.btn.sm { min-height: 44px; padding: 0 12px; font-size: 15px; }
+.card-main { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 0; margin: 0; color: inherit; border-radius: 8px; }
+.card-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+
+/* ---------- estados ---------- */
+.state { padding: 36px 24px; text-align: center; display: grid; gap: 10px; justify-items: center; align-content: center; }
+.state h2 { margin: 0; font-size: 18px; font-weight: 650; }
+.state p { margin: 0; color: var(--hint); max-width: 32ch; }
+.state .btn { margin-top: 6px; }
+.chatview > .state { flex: 1; }
+.skel { border-radius: var(--r-card); background: linear-gradient(90deg, var(--card) 25%, color-mix(in srgb, var(--card) 85%, var(--text)) 50%, var(--card) 75%); background-size: 200% 100%; animation: shimmer 1.3s linear infinite; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+#auth { position: fixed; inset: 0; z-index: 20; background: var(--page); display: flex; }
+#auth .state, #lock .state { margin: auto; }
+#lock { position: fixed; inset: 0; z-index: 19; background: var(--page); display: flex; }
+#toast { position: fixed; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 30; max-width: min(92vw, 420px); pointer-events: none; }
+#toast div { background: var(--text); color: var(--page); padding: 10px 16px; border-radius: 12px; font-size: 14.5px; box-shadow: 0 6px 24px rgba(0,0,0,.28); text-align: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <div class="id">
+      <div class="proj" id="top-proj">Painel do Claude</div>
+      <div class="sub" id="top-sub">Carregando…</div>
+    </div>
+    <div class="side" id="top-side"></div>
+  </header>
+
+  <main id="views">
+    <section id="v-agora" class="view" role="tabpanel" aria-labelledby="t-agora" hidden>
+      <div class="ptr" id="ptr" aria-hidden="true"></div>
+      <div class="pad">
+        <div class="agora-bar">
+          <button class="btn" id="agora-new" type="button">＋ Nova sessão em…</button>
+          <button class="btn ghost icon" id="agora-refresh" type="button" aria-label="Atualizar">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+          </button>
+        </div>
+        <div id="agora-body" class="pad" style="padding:0"></div>
+      </div>
+    </section>
+
+    <section id="v-contas" class="view" role="tabpanel" aria-labelledby="t-contas" hidden>
+      <div class="pad" id="contas-body"></div>
+    </section>
+
+    <section id="v-sessoes" class="view" role="tabpanel" aria-labelledby="t-sessoes" hidden>
+      <div class="pad">
+        <div class="toolbar">
+          <label class="field"><span>Projeto</span><select class="sel" id="proj-sel" aria-label="Projeto"></select></label>
+          <button class="btn" id="new-btn" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Nova
+          </button>
+        </div>
+        <button class="btn ghost" id="sess-new-in" type="button">＋ Nova sessão em…</button>
+        <div id="sessoes-body" class="pad" style="padding:0"></div>
+      </div>
+    </section>
+
+    <section id="v-conversa" class="view chatview" role="tabpanel" aria-labelledby="t-conversa" hidden>
+      <div class="chat-acts" id="chat-acts" hidden>
+        <button class="btn ghost sm" id="chat-use" type="button">Usar no chat</button>
+        <button class="btn danger sm" id="chat-end" type="button">Encerrar</button>
+        <p class="chat-note" id="chat-note" hidden></p>
+      </div>
+      <div class="msgs" id="msgs">
+        <div class="older" id="older" hidden></div>
+        <div id="list"></div>
+      </div>
+      <div class="state" id="chat-state" hidden></div>
+      <div id="live" hidden></div>
+    </section>
+  </main>
+
+  <nav id="tabs" role="tablist" aria-label="Seções">
+    <button id="t-agora" role="tab" type="button" data-tab="agora" aria-selected="false" aria-controls="v-agora">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Agora
+      <i class="count" id="agora-count" hidden></i>
+    </button>
+    <button id="t-contas" role="tab" type="button" data-tab="contas" aria-selected="false" aria-controls="v-contas">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Contas
+    </button>
+    <button id="t-sessoes" role="tab" type="button" data-tab="sessoes" aria-selected="false" aria-controls="v-sessoes">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Sessões
+    </button>
+    <button id="t-conversa" role="tab" type="button" data-tab="conversa" aria-selected="false" aria-controls="v-conversa">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>Conversa
+      <i class="badge" id="tab-badge" hidden></i>
+    </button>
+  </nav>
+</div>
+
+<div id="auth" hidden>
+  <div class="state">
+    <h2>Acesso restrito</h2>
+    <p>Abra este painel pelo botão <b>Painel</b> no chat do bot, dentro do Telegram.</p>
+  </div>
+</div>
+<div id="lock" hidden>
+  <div class="state">
+    <h2>🔒 Trancado</h2>
+    <p>Mande <b>/destravar &lt;código&gt;</b> no chat do bot. Esta tela libera sozinha em seguida.</p>
+    <button class="btn" id="lock-retry" type="button">Verificar de novo</button>
+  </div>
+</div>
+<div id="sheet" hidden>
+  <div class="scrim" id="sheet-scrim"></div>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div class="sheet-h">
+      <h2 id="sheet-title" tabindex="-1">Nova sessão em…</h2>
+      <button class="sheet-x" id="sheet-x" type="button" aria-label="Fechar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body" id="sheet-body"></div>
+    <div class="sheet-f">
+      <button class="btn ghost" id="sheet-cancel" type="button">Cancelar</button>
+      <button class="btn" id="sheet-ok" type="button" disabled>Iniciar sessão</button>
+    </div>
+  </div>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+'use strict';
+
+/* ---------- Telegram (parcial fora dele) ---------- */
+const tg = (window.Telegram && window.Telegram.WebApp) || null;
+const safe = (fn) => { try { return fn(); } catch (_) { return undefined; } };
+const initData = () => (tg && tg.initData) || '';
+const haptic = (kind) => safe(() => tg && tg.HapticFeedback && (kind === 'ok' ? tg.HapticFeedback.notificationOccurred('success') : tg.HapticFeedback.impactOccurred('light')));
+
+const $ = (s) => document.querySelector(s);
+function el(tag, props, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') n.className = v;
+    else if (k === 'text') n.textContent = v;
+    else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids.flat()) {
+    if (c == null || c === false) continue;
+    n.append(c.nodeType ? c : document.createTextNode(String(c)));
+  }
+  return n;
+}
+const svgCheck = () => { const d = document.createElement('div'); d.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>'; return d.firstChild; };
+
+/* ---------- tema ---------- */
+function applyScheme() {
+  const dark = tg && tg.colorScheme ? tg.colorScheme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.dataset.scheme = dark ? 'dark' : 'light';
+}
+applyScheme();
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyScheme);
+if (tg && tg.onEvent) safe(() => tg.onEvent('themeChanged', applyScheme));
+if (tg) safe(() => { tg.ready(); tg.expand(); if (tg.disableVerticalSwipes) tg.disableVerticalSwipes(); });
+
+/* ---------- API ---------- */
+class ApiError extends Error { constructor(status, msg, retryAfter) { super(msg); this.status = status; this.retryAfter = retryAfter || 0; } }
+let authFailed = false;
+function showAuth() { authFailed = true; $('#auth').hidden = false; }
+async function api(path, { method = 'GET', body } = {}) {
+  const headers = { 'X-Tg-Init-Data': initData() };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  let res;
+  try {
+    res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
+  } catch (_) {
+    throw new ApiError(0, 'Sem conexão com o bot. Verifique a internet e tente de novo.');
+  }
+  if (res.status === 401) { showAuth(); throw new ApiError(401, 'Acesso restrito'); }
+  if (res.status === 423) { $('#lock').hidden = false; throw new ApiError(423, 'Painel trancado'); }
+  if (res.status === 429) throw new ApiError(429, 'Muitas requisições. Aguarde um instante.', Math.min(60, Math.max(1, parseInt(res.headers.get('Retry-After'), 10) || 5)));
+  let data = null;
+  try { data = await res.json(); } catch (_) { /* corpo vazio */ }
+  if (!res.ok) throw new ApiError(res.status, (data && data.error) || `Erro ${res.status}`);
+  return data;
+}
+const enc = encodeURIComponent;
+const FRIENDLY = {
+  no_owner: 'O bot ainda não está vinculado a você. Vincule pelo chat do Telegram.',
+};
+const friendly = (m) => FRIENDLY[m] || m;
+
+/* ---------- utilidades ---------- */
+function toDate(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return new Date(v < 1e12 ? v * 1000 : v);
+  const d = new Date(v);
+  return isNaN(d) ? null : d;
+}
+const pad2 = (n) => String(n).padStart(2, '0');
+function fmtTime(d) {
+  if (!d) return '';
+  const now = new Date();
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  return d.toDateString() === now.toDateString() ? hm : `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)} ${hm}`;
+}
+function relTime(d) {
+  if (!d) return '';
+  const s = (Date.now() - d.getTime()) / 1000;
+  if (s < 60) return 'agora';
+  if (s < 3600) return `há ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `há ${Math.floor(s / 3600)} h`;
+  if (s < 172800) return 'ontem';
+  return `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}`;
+}
+function resetIn(d) {
+  if (!d) return 'sem previsão de reset';
+  const m = Math.round((d.getTime() - Date.now()) / 60000);
+  if (m <= 0) return 'reseta agora';
+  if (m < 60) return `reseta em ${m} min`;
+  if (m < 1440) return `reseta em ${Math.floor(m / 60)} h ${m % 60} min`;
+  return `reseta em ${Math.floor(m / 1440)} d ${Math.floor((m % 1440) / 60)} h`;
+}
+function fmtDur(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s >= 60 ? `${Math.floor(s / 60)}m${pad2(s % 60)}s` : `${s}s`;
+}
+const fmtCost = (c) => (typeof c === 'number' ? `US$ ${c.toFixed(2).replace('.', ',')}` : '');
+let toastTimer = null;
+function toast(msg) {
+  const box = $('#toast');
+  box.replaceChildren(el('div', { text: msg }));
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => box.replaceChildren(), 3800);
+}
+function stateBox({ title, text, action, onAction }) {
+  return el('div', { class: 'state' },
+    el('h2', { text: title }),
+    text ? el('p', { text }) : null,
+    action ? el('button', { class: 'btn', type: 'button', onclick: onAction, text: action }) : null);
+}
+function skeletons(n, h) {
+  return Array.from({ length: n }, () => el('div', { class: 'skel', style: `height:${h}px`, 'aria-hidden': 'true' }));
+}
+function confirmAsk(msg, cb) {
+  if (tg && tg.showConfirm && safe(() => tg.isVersionAtLeast('6.2'))) { safe(() => tg.showConfirm(msg, cb)); return; }
+  cb(window.confirm(msg));
+}
+
+/* ---------- estado global ---------- */
+const S = { state: null, tab: null, stack: [], tick: 0 };
+const activeSid = () => (S.state && S.state.session_id) || null;
+const isRunning = (sid) => !!(S.state && sid && (S.state.running || []).includes(sid));
+
+async function loadState() {
+  try {
+    const wasLocked = !$('#lock').hidden;
+    S.state = await api('/api/state');
+    $('#lock').hidden = !S.state.locked;
+    if (wasLocked && !S.state.locked && S.tab) { accounts = null; sessions = null; agora = null; chat.sid = null; setTab(S.tab); }
+    renderTop();
+    syncRunFromState();
+  } catch (e) {
+    if (e.status !== 401 && !S.state) $('#top-sub').textContent = 'Sem conexão';
+  }
+}
+
+function renderTop() {
+  const st = S.state;
+  if (!st) return;
+  $('#top-proj').textContent = st.project_label || 'Nenhum projeto';
+  const bits = [];
+  if (st.account) bits.push(st.account);
+  if (st.session_id) bits.push(`sessão ${st.session_id.slice(0, 8)}`);
+  $('#top-sub').textContent = bits.join(' · ') || 'Escolha um projeto e uma sessão';
+  const side = $('#top-side');
+  side.replaceChildren();
+  const n = (st.running || []).length;
+  if (n) side.append(el('div', {}, el('span', { class: 'live-dot', 'aria-hidden': 'true' }), n === 1 ? 'Rodando' : `${n} rodando`));
+  const p = st.power || {};
+  if (p.battery != null || p.ac != null) {
+    const low = p.ac === false && p.battery != null && p.battery <= 20;
+    const txt = p.ac ? (p.battery != null ? `Na tomada · ${p.battery}%` : 'Na tomada') : `Bateria ${p.battery != null ? p.battery + '%' : ''}`.trim();
+    side.append(el('div', { class: low ? 'low' : '' }, txt));
+  }
+  $('#tab-badge').hidden = !n;
+  syncChatActs();
+  const w = Number.isFinite(st.working) ? st.working : 0;
+  const cnt = $('#agora-count');
+  cnt.hidden = !w;
+  cnt.textContent = String(w);
+  $('#t-agora').setAttribute('aria-label', w ? `Agora, ${w} trabalhando` : 'Agora');
+}
+
+/* ---------- abas ---------- */
+const TABS = ['agora', 'contas', 'sessoes', 'conversa'];
+function setTab(tab) {
+  S.tab = tab;
+  for (const t of TABS) {
+    $('#v-' + t).hidden = t !== tab;
+    $('#t-' + t).setAttribute('aria-selected', String(t === tab));
+  }
+  if (tg && tg.BackButton) safe(() => (S.stack.length ? tg.BackButton.show() : tg.BackButton.hide()));
+  if (tab === 'agora') loadAgora();
+  if (tab === 'contas') loadAccounts();
+  if (tab === 'sessoes') loadSessions();
+  if (tab === 'conversa') enterChat();
+}
+function go(tab) {
+  if (tab === S.tab) return;
+  if (S.tab && S.stack[S.stack.length - 1] !== S.tab) S.stack.push(S.tab);
+  if (S.stack.length > 8) S.stack.shift();
+  setTab(tab);
+}
+function back() {
+  const prev = S.stack.pop();
+  if (prev) setTab(prev);
+}
+document.querySelectorAll('#tabs button').forEach((b) => b.addEventListener('click', () => { haptic(); go(b.dataset.tab); }));
+if (tg && tg.BackButton) safe(() => tg.BackButton.onClick(back));
+
+/* ---------- agora ---------- */
+let agora = null, agoraBusy = false;
+const ageFmt = (s) => {
+  if (!Number.isFinite(s)) return '';
+  if (s < 60) return 'agora';
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h`;
+  return `${Math.floor(s / 86400)} d`;
+};
+
+function agoraCard(s) {
+  const lastP = (s.last_prompt || '').trim() || (s.first_prompt || '').trim();
+  const bits = [
+    s.working ? el('span', { class: 'chip warn' }, el('span', { class: 'live-dot', 'aria-hidden': 'true' }), 'Trabalhando') : null,
+    s.pc ? el('span', { class: 'chip', text: '🖥 PC' }) : null,
+    s.active ? el('span', { class: 'chip ok' }, svgCheck(), 'Ativa no bot') : null,
+    el('span', { text: s.account || '?' }),
+  ];
+  const card = el('div', { class: 'card' + (s.working ? ' work' : '') + (s.active ? ' is-active' : '') },
+    el('button', { class: 'card-main', type: 'button', onclick: () => openSession(s, card) },
+      el('div', { class: 'ag-top' },
+        el('span', { class: 'ag-proj', text: s.project_label || s.project || 'Sem projeto' }),
+        el('span', { class: 'ag-age', text: ageFmt(s.age_s) })),
+      el('div', { class: 'sess-prompt', text: lastP || '(sessão sem mensagem)' }),
+      el('div', { class: 'sess-meta' }, bits)),
+    el('div', { class: 'card-acts' },
+      el('button', { class: 'btn ghost sm', type: 'button', onclick: () => useInChat(s, card), text: 'Usar no chat' }),
+      el('button', { class: 'btn danger sm', type: 'button', onclick: () => endSession(s, card), text: 'Encerrar' })));
+  return card;
+}
+
+function renderAgora() {
+  const body = $('#agora-body');
+  const list = agora || [];
+  const groups = [
+    ['⏳ Trabalhando', list.filter((s) => s.working)],
+    ['🖥 Abertas no PC', list.filter((s) => s.pc && !s.working)],
+    ['🔵 Ativa no bot', list.filter((s) => s.active && !s.working && !s.pc)],
+  ].filter(([, g]) => g.length);
+  if (!groups.length) { body.replaceChildren(stateBox({ title: 'Nada aberto agora', text: 'Nenhuma sessão está trabalhando, aberta no PC ou ativa no bot. Comece uma nova acima.' })); return; }
+  body.replaceChildren(...groups.map(([title, g]) =>
+    el('section', { class: 'sec', 'aria-label': title },
+      el('h2', { class: 'sec-h' }, title, el('span', { class: 'n', text: String(g.length) })),
+      ...g.map(agoraCard))));
+}
+
+async function loadAgora(manual) {
+  if (agoraBusy) return;
+  agoraBusy = true;
+  const body = $('#agora-body'), rb = $('#agora-refresh');
+  if (!agora) body.replaceChildren(...skeletons(3, 96));
+  if (manual) rb.classList.add('spin');
+  try {
+    agora = await api('/api/sessions?scope=open');
+    if (S.tab === 'agora') renderAgora();
+  } catch (e) {
+    if (e.status === 401) return;
+    if (!agora) body.replaceChildren(stateBox({ title: 'Não consegui carregar', text: e.message, action: 'Tentar de novo', onAction: () => loadAgora(true) }));
+    else if (manual) toast(e.message);
+  } finally { agoraBusy = false; rb.classList.remove('spin'); }
+}
+$('#agora-refresh').addEventListener('click', () => loadAgora(true));
+
+/* puxar para atualizar (só no topo da lista) */
+(() => {
+  const view = $('#v-agora'), ptr = $('#ptr');
+  let y0 = null, dy = 0;
+  view.addEventListener('touchstart', (e) => { y0 = view.scrollTop <= 0 ? e.touches[0].clientY : null; dy = 0; }, { passive: true });
+  view.addEventListener('touchmove', (e) => {
+    if (y0 == null) return;
+    dy = Math.max(0, e.touches[0].clientY - y0);
+    if (!dy) return;
+    ptr.classList.add('pulling');
+    ptr.style.height = Math.min(56, dy / 2) + 'px';
+    ptr.textContent = dy > 110 ? 'Solte para atualizar' : 'Puxe para atualizar';
+  }, { passive: true });
+  const end = () => {
+    if (y0 == null) return;
+    const fire = dy > 110;
+    y0 = null; dy = 0;
+    ptr.classList.remove('pulling');
+    ptr.style.height = '0px';
+    if (fire) loadAgora(true);
+  };
+  view.addEventListener('touchend', end);
+  view.addEventListener('touchcancel', end);
+})();
+
+/* ---------- nova sessão em projeto (bottom sheet) ---------- */
+const sheet = { open: false, projects: [], accounts: [], project: null, account: null, opener: null, busy: false };
+const sheetEl = $('#sheet'), sheetBody = $('#sheet-body'), sheetOk = $('#sheet-ok');
+
+function pickRow(name, value, label, sub, subCls, checked, disabled) {
+  const input = el('input', { type: 'radio', name, value, checked, disabled, onchange: () => {
+    if (name === 'sp') sheet.project = value; else sheet.account = value;
+    syncSheet();
+  } });
+  return el('label', { class: 'pick' }, input, el('span', { class: 'dot', 'aria-hidden': 'true' }),
+    el('span', { class: 'lbl', text: label }), sub ? el('span', { class: 'sub ' + (subCls || ''), text: sub }) : null);
+}
+
+function renderSheet() {
+  const pj = sheet.projects, ac = sheet.accounts;
+  const nodes = [el('h3', { text: 'Projeto' })];
+  if (!pj.length) nodes.push(el('p', { class: 'hintline', text: 'Nenhum projeto cadastrado no bot.' }));
+  else nodes.push(el('div', { role: 'radiogroup', 'aria-label': 'Projeto', style: 'display:grid;gap:8px' },
+    pj.map((p) => pickRow('sp', p.path, p.label, '', '', p.path === sheet.project, false))));
+  nodes.push(el('h3', { text: 'Conta' }));
+  if (!ac.length) nodes.push(el('p', { class: 'hintline', text: 'Nenhuma conta configurada.' }));
+  else nodes.push(el('div', { role: 'radiogroup', 'aria-label': 'Conta', style: 'display:grid;gap:8px' },
+    ac.map((a) => {
+      const p = a.seven_day && typeof a.seven_day.percent === 'number' ? Math.round(a.seven_day.percent) : null;
+      const sev = sevOf(p);
+      const sub = !a.usable ? (STATE_LABEL[a.state] || 'Indisponível') : (p == null ? '7d —' : `7d ${p}%`);
+      return pickRow('sa', a.name, a.name, sub, !a.usable ? 'crit' : sev === 'ok' ? '' : sev, a.name === sheet.account, !a.usable);
+    })));
+  sheetBody.replaceChildren(...nodes);
+  syncSheet();
+}
+
+function syncSheet() { sheetOk.disabled = sheet.busy || !sheet.project || !sheet.account; }
+
+async function openSheet(opener) {
+  sheet.open = true; sheet.opener = opener || document.activeElement; sheet.busy = false;
+  sheet.project = null; sheet.account = null;
+  sheetEl.hidden = false;
+  sheetBody.replaceChildren(...skeletons(5, 52));
+  sheetOk.disabled = true;
+  $('#sheet-title').focus();
+  try {
+    const [pj, ac] = await Promise.all([api('/api/projects'), api('/api/accounts')]);
+    if (!sheet.open) return;
+    const rank = (p) => (/^\s*~/.test(p.label || '') ? 0 : 1);
+    sheet.projects = pj.map((p, i) => [p, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map((x) => x[0]);
+    sheet.accounts = ac.map((a, i) => [a, i]).sort((a, b) => (b[0].usable !== false) - (a[0].usable !== false) || a[1] - b[1]).map((x) => x[0]);
+    const cur = (S.state && S.state.project) || null;
+    sheet.project = (sheet.projects.find((p) => p.path === cur) || sheet.projects[0] || {}).path || null;
+    const curA = S.state && S.state.account;
+    sheet.account = (sheet.accounts.find((a) => a.usable !== false && a.name === curA) || sheet.accounts.find((a) => a.usable !== false) || {}).name || null;
+    renderSheet();
+  } catch (e) {
+    if (!sheet.open || e.status === 401) return;
+    sheetBody.replaceChildren(stateBox({ title: 'Não consegui carregar', text: e.message, action: 'Tentar de novo', onAction: () => openSheet(sheet.opener) }));
+  }
+}
+
+function closeSheet(restore = true) {
+  if (!sheet.open) return;
+  sheet.open = false; sheetEl.hidden = true;
+  if (restore && sheet.opener && sheet.opener.isConnected) safe(() => sheet.opener.focus());
+}
+
+async function confirmSheet() {
+  if (!sheet.project || !sheet.account || sheet.busy) return;
+  sheet.busy = true; syncSheet();
+  try {
+    const r = await api('/api/session', { method: 'POST', body: { new: true, project: sheet.project, account: sheet.account } });
+    haptic('ok');
+    if (S.state) {
+      S.state.session_id = r && r.session_id;
+      S.state.project = sheet.project;
+      S.state.account = sheet.account;
+      const pr = sheet.projects.find((p) => p.path === sheet.project);
+      if (pr) S.state.project_label = pr.label;
+    }
+    closeSheet(false);
+    resetChat();
+    renderTop();
+    sessions = null; agora = null;
+    await activateAndClose(r.session_id);
+  } catch (e) {
+    if (e.status !== 401) toast(friendly(e.message));
+  } finally { sheet.busy = false; syncSheet(); }
+}
+
+sheetOk.addEventListener('click', confirmSheet);
+$('#sheet-cancel').addEventListener('click', () => closeSheet());
+$('#sheet-x').addEventListener('click', () => closeSheet());
+$('#sheet-scrim').addEventListener('click', () => closeSheet());
+$('#agora-new').addEventListener('click', (ev) => openSheet(ev.currentTarget));
+$('#sess-new-in').addEventListener('click', (ev) => openSheet(ev.currentTarget));
+sheetEl.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') { ev.stopPropagation(); closeSheet(); return; }
+  if (ev.key !== 'Tab') return;
+  const f = [...sheetEl.querySelectorAll('button:not([disabled]), input:not([disabled])')].filter((n) => n.offsetParent !== null);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (ev.shiftKey && (document.activeElement === first || document.activeElement === $('#sheet-title'))) { ev.preventDefault(); last.focus(); }
+  else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+});
+
+/* ---------- contas ---------- */
+const sevOf = (p) => (p == null ? 'ok' : p >= 90 ? 'crit' : p >= 70 ? 'warn' : 'ok');
+const STATE_LABEL = { exhausted: 'Esgotada', limited: 'Limitada', cooldown: 'Em espera', error: 'Com erro', logged_out: 'Deslogada', unknown: 'Sem dados' };
+let accounts = null;
+
+function meter(label, w) {
+  const pct = w && typeof w.percent === 'number' ? Math.max(0, Math.min(100, Math.round(w.percent))) : null;
+  const sev = sevOf(pct);
+  const bar = el('div', { class: 'bar', role: 'progressbar', 'aria-label': `Uso em ${label}`, 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': pct == null ? null : String(pct) },
+    el('div', { class: 'fill', style: `width:${pct == null ? 0 : pct}%` }));
+  return el('div', { class: 'meter', 'data-sev': sev },
+    el('span', { class: 'lbl', text: label }), bar,
+    el('span', { class: 'pct', text: pct == null ? '—' : pct + '%' }),
+    el('span', { class: 'reset', text: pct == null ? 'sem dado' : resetIn(toDate(w.resets_at)) }));
+}
+
+function accountCard(a) {
+  const chips = [];
+  if (a.active) chips.push(el('span', { class: 'chip ok' }, svgCheck(), 'Ativa'));
+  const stateTxt = a.state && a.state !== 'ok' && a.state !== 'active' ? (STATE_LABEL[a.state] || a.state) : (!a.usable ? 'Indisponível' : '');
+  if (stateTxt) chips.push(el('span', { class: 'chip ' + (a.usable ? 'warn' : 'crit'), text: stateTxt }));
+  const card = el('button', { class: 'card' + (a.active ? ' is-active' : '') + (a.usable === false ? ' off' : ''), type: 'button', 'aria-pressed': String(!!a.active),
+    'aria-label': `Conta ${a.name}${a.active ? ', ativa' : ''}. Toque para usar esta conta.`,
+    onclick: () => switchAccount(a, card) },
+    el('div', { class: 'acc-head' }, el('span', { class: 'acc-name', text: a.name }), chips),
+    meter('5 h', a.five_hour), meter('7 dias', a.seven_day));
+  return card;
+}
+
+function renderAccounts() {
+  const body = $('#contas-body');
+  if (!accounts.length) { body.replaceChildren(stateBox({ title: 'Nenhuma conta configurada', text: 'Cadastre as contas do Claude no bot e elas aparecem aqui.' })); return; }
+  body.replaceChildren(...accounts.map(accountCard), el('p', { class: 'hintline', text: 'Toque numa conta para usá-la nas próximas mensagens.' }));
+}
+
+async function loadAccounts() {
+  const body = $('#contas-body');
+  if (!accounts) body.replaceChildren(...skeletons(3, 150));
+  try {
+    accounts = await api('/api/accounts');
+    if (S.tab === 'contas') renderAccounts();
+  } catch (e) {
+    if (e.status === 401) return;
+    if (!accounts) body.replaceChildren(stateBox({ title: 'Não consegui carregar as contas', text: e.message, action: 'Tentar de novo', onAction: loadAccounts }));
+  }
+}
+
+async function switchAccount(a, card) {
+  if (a.active) { toast(`${a.name} já é a conta ativa.`); return; }
+  card.setAttribute('aria-busy', 'true');
+  try {
+    await api('/api/account', { method: 'POST', body: { name: a.name } });
+    haptic('ok');
+    toast(`Conta ${a.name} ativa.`);
+    await Promise.all([loadAccounts(), loadState()]);
+  } catch (e) {
+    if (e.status !== 401) toast(friendly(e.message));
+  } finally { card.removeAttribute('aria-busy'); }
+}
+
+/* ---------- sessoes ---------- */
+let sessions = null, projects = null;
+
+async function loadSessions() {
+  const body = $('#sessoes-body');
+  if (!sessions) body.replaceChildren(...skeletons(4, 84));
+  try {
+    [projects, sessions] = await Promise.all([api('/api/projects'), api('/api/sessions')]);
+    if (S.tab === 'sessoes') renderSessions();
+  } catch (e) {
+    if (e.status === 401) return;
+    if (!sessions) body.replaceChildren(stateBox({ title: 'Não consegui carregar as sessões', text: e.message, action: 'Tentar de novo', onAction: loadSessions }));
+  }
+}
+
+function renderSessions() {
+  const sel = $('#proj-sel');
+  sel.replaceChildren(...(projects.length ? [] : [el('option', { value: '', text: 'Nenhum projeto' })]),
+    ...projects.map((p) => el('option', { value: p.path, text: p.label, selected: p.active })));
+  sel.disabled = !projects.length;
+  const body = $('#sessoes-body');
+  if (!projects.length) { body.replaceChildren(stateBox({ title: 'Nenhum projeto', text: 'Adicione um projeto no bot para listar as sessões dele.' })); return; }
+  if (!sessions.length) { body.replaceChildren(stateBox({ title: 'Sem sessões neste projeto', text: 'Toque em Nova para começar uma conversa.', action: 'Nova sessão', onAction: newSession })); return; }
+  body.replaceChildren(...sessions.map(sessionCard));
+}
+
+function sessionCard(s) {
+  const run = s.running || isRunning(s.session_id);
+  const card = el('button', { class: 'card' + (s.active ? ' is-active' : ''), type: 'button', onclick: () => openSession(s, card) },
+    el('div', { class: 'sess-prompt', text: s.first_prompt || '(sessão sem mensagem)' }),
+    el('div', { class: 'sess-meta' },
+      s.active ? el('span', { class: 'chip ok' }, svgCheck(), 'Ativa') : null,
+      run ? el('span', { class: 'chip warn' }, el('span', { class: 'live-dot', 'aria-hidden': 'true' }), 'Rodando') : null,
+      el('span', { class: 'sid', text: s.short || String(s.session_id).slice(0, 8) }),
+      s.account ? el('span', { text: s.account }) : null,
+      el('span', { text: relTime(toDate(s.mtime)) })));
+  return card;
+}
+
+async function openSession(s, card) {
+  card.setAttribute('aria-busy', 'true');
+  try {
+    await api('/api/session', { method: 'POST', body: { session_id: s.session_id } });
+    haptic();
+    S.state.session_id = s.session_id;
+    resetChat();
+    renderTop();
+    go('conversa');
+    loadState();
+  } catch (e) {
+    if (e.status !== 401) toast(friendly(e.message));
+  } finally { card.removeAttribute('aria-busy'); }
+}
+
+async function newSession() {
+  const btn = $('#new-btn'); btn.disabled = true;
+  try {
+    const r = await api('/api/session', { method: 'POST', body: { new: true } });
+    haptic('ok');
+    if (S.state) S.state.session_id = r && r.session_id;
+    resetChat();
+    renderTop();
+    sessions = null; agora = null;
+    await activateAndClose(r && r.session_id);
+  } catch (e) {
+    if (e.status !== 401) toast(friendly(e.message));
+  } finally { btn.disabled = false; }
+}
+$('#new-btn').addEventListener('click', newSession);
+
+$('#proj-sel').addEventListener('change', async (ev) => {
+  const sel = ev.target; sel.disabled = true;
+  try {
+    await api('/api/project', { method: 'POST', body: { path: sel.value } });
+    sessions = null;
+    resetChat();
+    await loadState();
+    await loadSessions();
+  } catch (e) {
+    if (e.status !== 401) toast(friendly(e.message));
+    loadSessions();
+  } finally { sel.disabled = false; }
+});
+
+/* ---------- conversa: histórico ---------- */
+const chat = { view: null, sid: null, before: null, loading: false, status: 'idle', turns: 0, older: false, tail: 0, tailStart: 0 };
+const curSid = () => chat.view || activeSid(); // sessão em exibição (deep link) ou a ativa no bot
+const msgs = $('#msgs'), list = $('#list'), older = $('#older');
+
+function resetChat() { chat.view = null; chat.sid = null; chat.before = null; chat.status = 'idle'; chat.turns = 0; chat.older = false; chat.tail = 0; chat.tailStart = 0; list.replaceChildren(); runReset(); }
+
+/* ---------- markdown seguro: texto -> nós DOM (createElement/textContent; nunca innerHTML) ---------- */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MD = {
+  fence: /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)[^`]*$/,
+  fenceEnd: /^ {0,3}(`{3,}|~{3,})\s*$/,
+  heading: /^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/,
+  hr: /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/,
+  quote: /^ {0,3}>/,
+  list: /^( *)([-*+]|\d{1,9}[.)])(?: +(.*))?$/,
+  sep: /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/,
+};
+
+// só http/https absolutos; devolve a URL normalizada ou null (javascript:, data:, relativos...)
+function safeUrl(u) {
+  const t = String(u || '').trim();
+  if (!/^https?:\/\//i.test(t)) return null;
+  try {
+    const x = new URL(t);
+    return x.protocol === 'http:' || x.protocol === 'https:' ? x.href : null;
+  } catch (_) { return null; }
+}
+
+function mdLink(href, kids) {
+  return el('a', { href, target: '_blank', rel: 'noopener noreferrer', onclick: (ev) => {
+    if (tg && typeof tg.openLink === 'function') { ev.preventDefault(); safe(() => tg.openLink(href)); }
+  } }, kids);
+}
+
+function findBackticks(s, run, from) {
+  let k = s.indexOf('`', from);
+  while (k >= 0) {
+    let e = k; while (e < s.length && s[e] === '`') e++;
+    if (e - k === run.length) return k;
+    k = s.indexOf('`', e);
+  }
+  return -1;
+}
+
+// [texto](url "título") a partir de s[i]==='[' -> { label, url, end } ou null
+function parseLinkAt(s, i) {
+  let d = 0, j = i;
+  for (; j < s.length; j++) {
+    const c = s[j];
+    if (c === '\\') { j++; continue; }
+    if (c === '[') d++;
+    else if (c === ']' && --d === 0) break;
+  }
+  if (j >= s.length || s[j + 1] !== '(') return null;
+  let p = 1, k = j + 2;
+  for (; k < s.length; k++) {
+    const c = s[k];
+    if (c === '\\') { k++; continue; }
+    if (c === '\n') return null;
+    if (c === '(') p++;
+    else if (c === ')' && --p === 0) break;
+  }
+  if (k >= s.length) return null;
+  let dest = s.slice(j + 2, k).trim();
+  const tm = /^(\S+)\s+(?:"[^"]*"|'[^']*')$/.exec(dest);
+  if (tm) dest = tm[1];
+  if (dest.startsWith('<') && dest.endsWith('>')) dest = dest.slice(1, -1);
+  return { label: s.slice(i + 1, j), url: dest, end: k + 1 };
+}
+
+function mdInline(s, depth, inLink) {
+  if (depth > 5 || s.length > 20000) return [document.createTextNode(s)];
+  const out = [];
+  let buf = '';
+  const flush = () => { if (buf) { out.push(document.createTextNode(buf)); buf = ''; } };
+  const isWord = (ch) => !!ch && /[\p{L}\p{N}]/u.test(ch);
+  const n = s.length;
+  let i = 0;
+  while (i < n) {
+    const c = s[i];
+    if (c === '\\' && i + 1 < n && /[\\`*_{}[\]()#+\-.!|~<>]/.test(s[i + 1])) { buf += s[i + 1]; i += 2; continue; }
+    if (c === '\n') { flush(); out.push(document.createElement('br')); i++; continue; }
+    if (c === '`') {
+      let j = i; while (j < n && s[j] === '`') j++;
+      const run = s.slice(i, j), k = findBackticks(s, run, j);
+      if (k >= 0) {
+        flush();
+        let code = s.slice(j, k).replace(/\n/g, ' ');
+        if (code.length > 2 && code[0] === ' ' && code.endsWith(' ') && code.trim()) code = code.slice(1, -1);
+        out.push(el('code', { class: 'ic', text: code }));
+        i = k + run.length; continue;
+      }
+      buf += run; i = j; continue;
+    }
+    if ((c === '[' || (c === '!' && s[i + 1] === '[')) && !inLink) {
+      const img = c === '!';
+      const L = parseLinkAt(s, img ? i + 1 : i);
+      if (L) {
+        const href = safeUrl(L.url);
+        flush();
+        if (img) out.push(href ? mdLink(href, [L.label.trim() || href]) : document.createTextNode(L.label || ''));
+        else if (href) out.push(mdLink(href, mdInline(L.label, depth + 1, true)));
+        else out.push(...mdInline(L.label, depth + 1, true)); // javascript:, data:, relativo -> só o texto
+        i = L.end; continue;
+      }
+    }
+    if (c === '<') {
+      const m = /^<(https?:\/\/[^\s<>]+)>/.exec(s.slice(i, i + 2100));
+      const href = m && !inLink ? safeUrl(m[1]) : null;
+      if (href) { flush(); out.push(mdLink(href, [m[1]])); i += m[0].length; continue; }
+    }
+    if (c === 'h' && !inLink && !isWord(s[i - 1]) && (s.startsWith('http://', i) || s.startsWith('https://', i))) {
+      const m = /^https?:\/\/[^\s<>[\]]+/.exec(s.slice(i, i + 2100));
+      let url = m[0];
+      for (;;) {
+        const last = url[url.length - 1];
+        if (/[.,;:!?'"*_]/.test(last)) url = url.slice(0, -1);
+        else if (last === ')' && (url.match(/\(/g) || []).length < (url.match(/\)/g) || []).length) url = url.slice(0, -1);
+        else break;
+      }
+      const href = safeUrl(url);
+      if (href) { flush(); out.push(mdLink(href, [url])); i += url.length; continue; }
+    }
+    if ((c === '*' || c === '_' || c === '~') && s[i + 1] === c && !/\s/.test(s[i + 2] || ' ') && (c !== '_' || !isWord(s[i - 1]))) {
+      let k = s.indexOf(c + c, i + 2);
+      while (k >= 0 && (/\s/.test(s[k - 1]) || k === i + 2 || (c === '_' && isWord(s[k + 2])))) k = s.indexOf(c + c, k + 1);
+      if (k >= 0) {
+        while (s[k + 2] === c && c !== '~') k++;
+        flush();
+        out.push(el(c === '~' ? 'del' : 'strong', {}, mdInline(s.slice(i + 2, k), depth + 1, inLink)));
+        i = k + 2; continue;
+      }
+    }
+    if ((c === '*' || c === '_') && s[i + 1] !== c && !/\s/.test(s[i + 1] || ' ') && (c !== '_' || !isWord(s[i - 1]))) {
+      let k = s.indexOf(c, i + 1);
+      while (k >= 0 && (/\s/.test(s[k - 1]) || s[k + 1] === c || s[k - 1] === c || (c === '_' && isWord(s[k + 1])))) k = s.indexOf(c, k + 1);
+      if (k >= 0) { flush(); out.push(el('em', {}, mdInline(s.slice(i + 1, k), depth + 1, inLink))); i = k + 1; continue; }
+    }
+    buf += c; i++;
+  }
+  flush();
+  return out;
+}
+
+async function copyText(text, btn) {
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch (_) {
+    try {
+      const ta = el('textarea', { readonly: true, 'aria-hidden': 'true', style: 'position:fixed;top:0;left:0;opacity:0' });
+      ta.value = text;
+      document.body.append(ta);
+      ta.select();
+      ok = document.execCommand('copy');
+      ta.remove();
+    } catch (_e) { ok = false; }
+  }
+  haptic();
+  btn.textContent = ok ? 'copiado' : 'não copiou';
+  clearTimeout(btn._t);
+  btn._t = setTimeout(() => { btn.textContent = 'copiar'; }, 1600);
+}
+
+function mdCode(code, lang) {
+  const btn = el('button', { class: 'copy', type: 'button', 'aria-label': 'Copiar código', text: 'copiar', onclick: () => copyText(code, btn) });
+  return el('div', { class: 'codeblock' },
+    el('div', { class: 'cb-h' }, el('span', { class: 'cb-lang', text: (lang || 'código').slice(0, 24) }), btn),
+    el('pre', { tabindex: '0' }, el('code', { text: code })));
+}
+
+function splitRow(line) {
+  let t = line.trim();
+  if (t.startsWith('|')) t = t.slice(1);
+  if (t.endsWith('|') && !t.endsWith('\\|')) t = t.slice(0, -1);
+  const cells = [];
+  let cur = '';
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] === '\\' && t[i + 1] === '|') { cur += '|'; i++; }
+    else if (t[i] === '|') { cells.push(cur.trim()); cur = ''; }
+    else cur += t[i];
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+function mdTable(head, aligns, rows) {
+  const cell = (tag, txt, k) => el(tag, { 'data-a': aligns[k] || null }, mdInline(txt, 1, false));
+  const table = el('table', {},
+    el('thead', {}, el('tr', {}, head.map((h, k) => cell('th', h, k)))),
+    el('tbody', {}, rows.map((r) => el('tr', {}, head.map((_, k) => cell('td', r[k] || '', k))))));
+  return el('div', { class: 'tablewrap', role: 'region', 'aria-label': 'Tabela', tabindex: '0' }, table);
+}
+
+function mdBlocks(lines, depth) {
+  const out = [];
+  const indentOf = (l) => /^ */.exec(l)[0].length;
+  const blank = (l) => !l.trim();
+  const startsBlock = (l, nxt) => MD.fence.test(l) || MD.heading.test(l) || MD.hr.test(l) || MD.quote.test(l)
+    || /^ {0,3}(?:[-*+]|1[.)])(?: +\S|$)/.test(l) || (l.includes('|') && nxt != null && l.trim() !== '' && MD.sep.test(nxt) && nxt.includes('|'));
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (blank(line)) { i++; continue; }
+    if (depth > 6) { out.push(el('p', {}, mdInline(lines.slice(i).join('\n').trim(), 3, false))); break; }
+    let m = MD.fence.exec(line);
+    if (m) {
+      const fence = m[1], lang = m[2], body = [];
+      for (i++; i < lines.length; i++) {
+        const c = MD.fenceEnd.exec(lines[i]);
+        if (c && c[1][0] === fence[0] && c[1].length >= fence.length) break;
+        body.push(lines[i]);
+      }
+      i++;
+      out.push(mdCode(body.join('\n'), lang));
+      continue;
+    }
+    if ((m = MD.heading.exec(line))) {
+      const lv = m[1].length;
+      out.push(el('div', { class: 'md-h h' + Math.min(lv, 3), role: 'heading', 'aria-level': String(Math.min(6, lv + 2)) }, mdInline(m[2], 1, false)));
+      i++; continue;
+    }
+    if (MD.hr.test(line)) { out.push(document.createElement('hr')); i++; continue; }
+    if (line.includes('|') && i + 1 < lines.length && lines[i + 1].includes('|') && MD.sep.test(lines[i + 1])) {
+      const head = splitRow(line), seps = splitRow(lines[i + 1]);
+      if (head.length === seps.length) {
+        const aligns = seps.map((x) => (x.startsWith(':') && x.endsWith(':') ? 'center' : x.endsWith(':') ? 'right' : null));
+        const rows = [];
+        for (i += 2; i < lines.length && !blank(lines[i]) && lines[i].includes('|'); i++) rows.push(splitRow(lines[i]));
+        out.push(mdTable(head, aligns, rows));
+        continue;
+      }
+    }
+    if (MD.quote.test(line)) {
+      const inner = [];
+      for (; i < lines.length && MD.quote.test(lines[i]); i++) inner.push(lines[i].replace(/^ {0,3}> ?/, ''));
+      out.push(el('blockquote', {}, mdBlocks(inner, depth + 1)));
+      continue;
+    }
+    if ((m = MD.list.exec(line))) {
+      const base = m[1].length, ordered = /\d/.test(m[2][0]);
+      const list = el(ordered ? 'ol' : 'ul', {});
+      if (ordered && parseInt(m[2], 10) !== 1) list.setAttribute('start', String(parseInt(m[2], 10)));
+      while (i < lines.length) {
+        const mm = MD.list.exec(lines[i]);
+        if (!mm || mm[1].length < base || mm[1].length > base + 1 || /\d/.test(mm[2][0]) !== ordered) break;
+        const off = mm[1].length + mm[2].length + 1;
+        const content = [mm[3] || ''];
+        i++;
+        while (i < lines.length) {
+          const l = lines[i];
+          if (blank(l)) {
+            let k = i; while (k < lines.length && blank(lines[k])) k++;
+            if (k < lines.length && indentOf(lines[k]) >= base + 2) { content.push(''); i++; continue; }
+            break;
+          }
+          const ind = indentOf(l);
+          if (ind >= base + 2) { content.push(l.slice(Math.min(ind, off))); i++; continue; }
+          if (MD.list.test(l) || startsBlock(l, lines[i + 1])) break;
+          if (content[content.length - 1] === '') break;
+          content.push(l.trim()); i++; // continuação preguiçosa do parágrafo
+        }
+        const task = /^\[([ xX])\]\s+/.exec(content[0]);
+        if (task) content[0] = content[0].slice(task[0].length);
+        const li = el('li', { class: task ? 'task' : null }, task ? el('span', { class: 'tk', 'aria-label': task[1] === ' ' ? 'pendente' : 'feito', text: task[1] === ' ' ? '☐' : '☑' }) : null, mdBlocks(content, depth + 1));
+        list.append(li);
+      }
+      out.push(list);
+      continue;
+    }
+    const para = [line.replace(/\s+$/, '')];
+    for (i++; i < lines.length && !blank(lines[i]) && !startsBlock(lines[i], lines[i + 1]); i++) para.push(lines[i].replace(/\s+$/, ''));
+    out.push(el('p', {}, mdInline(para.join('\n'), 0, false)));
+  }
+  return out;
+}
+
+function renderMd(text) {
+  return el('div', { class: 'md' }, mdBlocks(String(text || '').replace(/\r\n?/g, '\n').replace(/\t/g, '  ').split('\n'), 0));
+}
+
+function turnNode(t) {
+  const when = fmtTime(toDate(t.ts));
+  if (t.role === 'tool') {
+    const full = el('pre', { class: 'tool-full', hidden: true, text: t.text || '(sem detalhe)' });
+    const line = el('button', { class: 'tool-line', type: 'button', 'aria-expanded': 'false', onclick: () => {
+      const open = line.getAttribute('aria-expanded') !== 'true';
+      line.setAttribute('aria-expanded', String(open));
+      full.hidden = !open;
+    } }, el('b', { text: '🔧 ' + (t.tool || 'ferramenta') }), el('span', { text: t.text || '' }));
+    return el('div', { class: 'msg tool' }, line, full);
+  }
+  const isUser = t.role === 'user';
+  const text = t.text || '';
+  const bubble = el('div', { class: 'bubble' }, renderMd(text));
+  const node = el('div', { class: 'msg ' + (isUser ? 'user' : 'bot') }, bubble);
+  if (text.split('\n').length > 40 || text.length > 4000) {
+    bubble.classList.add('clamp');
+    const more = el('button', { class: 'more', type: 'button', text: 'mostrar tudo', 'aria-expanded': 'false', onclick: () => {
+      const open = bubble.classList.toggle('clamp') === false;
+      more.textContent = open ? 'mostrar menos' : 'mostrar tudo';
+      more.setAttribute('aria-expanded', String(open));
+    } });
+    node.append(more);
+  }
+  node.append(el('div', { class: 'meta', text: (isUser ? '👤 ' : '🤖 ') + when }));
+  return node;
+}
+
+const nearBottom = () => msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 140;
+const toBottom = () => { msgs.scrollTop = msgs.scrollHeight; };
+
+function renderOlder() {
+  older.hidden = chat.before == null;
+  if (chat.before == null) return;
+  older.replaceChildren(chat.loading ? 'Carregando mensagens anteriores…' : el('button', { class: 'btn ghost', type: 'button', onclick: loadOlder, text: 'Ver mensagens anteriores' }));
+}
+
+function showChatState(node) {
+  const st = $('#chat-state');
+  st.hidden = !node;
+  if (node) st.replaceChildren(...node.childNodes);
+  msgs.hidden = !!node;
+  syncChatActs();
+}
+
+async function enterChat() {
+  const sid = curSid();
+  if (!sid) {
+    if (!S.state) { await loadState(); }
+    if (!curSid()) {
+      showChatState(stateBox({ title: S.state && S.state.project ? 'Nenhuma sessão ativa' : 'Nenhum projeto escolhido', text: S.state && S.state.project ? 'Escolha uma sessão existente ou comece uma nova.' : 'Escolha um projeto e uma sessão para conversar.', action: 'Ir para Sessões', onAction: () => go('sessoes') }));
+      return;
+    }
+    return enterChat();
+  }
+  if (chat.sid !== sid) {
+    chat.sid = sid; chat.before = null; chat.status = 'loading';
+    showChatState(null);
+    list.replaceChildren(...skeletons(4, 58));
+    await loadHistory(false);
+  } else { showChatState(null); }
+  syncRunFromState();
+}
+
+async function loadHistory(silent) {
+  const sid = chat.sid;
+  try {
+    const partial = silent && chat.older;
+    const r = await api(`/api/history?session_id=${enc(sid)}&limit=${partial ? 100 : 30}`);
+    if (chat.sid !== sid) return;
+    let turns = r.turns || [];
+    const start = r.before == null ? 0 : r.before;
+    const stick = !silent || nearBottom();
+    // páginas antigas já carregadas: troca só o trecho final, sem perder a posição de leitura
+    if (partial && chat.older && start <= chat.tailStart && list.children.length >= chat.tail && !list.querySelector(':scope > .state')) {
+      turns = turns.slice(chat.tailStart - start);
+      const head = [...list.children].slice(0, list.children.length - chat.tail);
+      list.replaceChildren(...head, ...turns.map(turnNode));
+      chat.tail = turns.length;
+      if (stick) toBottom();
+      return;
+    }
+    chat.before = r.before == null ? null : r.before;
+    chat.tailStart = start;
+    chat.tail = turns.length;
+    chat.older = false;
+    chat.turns = turns.length;
+    chat.status = 'ready';
+    if (turns.length) list.replaceChildren(...turns.map(turnNode));
+    else list.replaceChildren(el('div', { class: 'state' }, el('h2', { text: 'Sessão sem mensagens' }), el('p', { text: 'Toque em Usar no chat e escreva no Telegram para começar.' })));
+    renderOlder();
+    if (stick) toBottom();
+  } catch (e) {
+    if (e.status === 401 || chat.sid !== sid) return;
+    if (silent) return;
+    chat.status = 'error'; chat.sid = null;
+    showChatState(stateBox({ title: 'Não consegui carregar a conversa', text: e.message, action: 'Tentar de novo', onAction: enterChat }));
+  }
+}
+
+async function loadOlder() {
+  if (chat.loading || chat.before == null || !chat.sid) return;
+  const sid = chat.sid;
+  chat.loading = true; renderOlder();
+  try {
+    const r = await api(`/api/history?session_id=${enc(sid)}&limit=30&before=${chat.before}`);
+    if (chat.sid !== sid) return;
+    const h0 = msgs.scrollHeight, y0 = msgs.scrollTop;
+    list.prepend(...(r.turns || []).map(turnNode));
+    chat.older = true;
+    chat.before = r.before == null ? null : r.before;
+    msgs.scrollTop = y0 + (msgs.scrollHeight - h0);
+  } catch (e) {
+    if (e.status !== 401) toast(e.message);
+  } finally { chat.loading = false; renderOlder(); }
+}
+msgs.addEventListener('scroll', () => { if (msgs.scrollTop < 120) loadOlder(); }, { passive: true });
+
+/* ---------- conversa: ao vivo ---------- */
+const run = { sid: null, after: 0, events: [], result: null, active: false, start: 0, timer: null, open: false, offline: false };
+const live = $('#live');
+
+function runReset() {
+  clearTimeout(run.timer);
+  Object.assign(run, { sid: null, after: 0, events: [], result: null, active: false, start: 0, timer: null, open: false, offline: false });
+  renderLive();
+}
+
+function runStart(sid) {
+  clearTimeout(run.timer);
+  Object.assign(run, { sid, after: 0, events: [], result: null, active: true, start: Date.now(), open: false, offline: false });
+  renderLive();
+  run.timer = setTimeout(runPoll, 300);
+}
+
+function syncRunFromState() {
+  const sid = curSid();
+  if (!sid || S.tab === null) return;
+  if (isRunning(sid) && !(run.active && run.sid === sid)) runStart(sid);
+  renderLive();
+}
+
+async function runPoll() {
+  const sid = run.sid;
+  if (!sid || !run.active || authFailed) return;
+  if (document.hidden) { run.timer = setTimeout(runPoll, 5000); return; }
+  try {
+    const r = await api(`/api/run?session_id=${enc(sid)}&after=${run.after}`);
+    if (run.sid !== sid || !run.active) return;
+    run.offline = false;
+    for (const e of r.events || []) if (e.seq > run.after) { run.events.push(e); run.after = e.seq; }
+    if (run.events.length > 300) run.events = run.events.slice(-300);
+    if (run.events.length && run.events[0].ts) { const d = toDate(run.events[0].ts); if (d && d.getTime() < run.start) run.start = d.getTime(); }
+    if (r.running) { renderLive(); run.timer = setTimeout(runPoll, 2000); return; }
+    run.active = false;
+    run.result = r.result || null;
+    if (S.state) S.state.running = (S.state.running || []).filter((x) => x !== sid);
+    renderTop(); renderLive();
+    if (r.result) haptic('ok');
+    if (chat.sid === sid) await loadHistory(true);
+  } catch (e) {
+    if (e.status === 401) return;
+    run.offline = e.status !== 429 && e.status !== 423; renderLive();
+    run.timer = setTimeout(runPoll, e.retryAfter ? e.retryAfter * 1000 : 3000);
+  }
+}
+
+function eventLine(e) {
+  if (e.kind === 'tool') return [e.tool || 'ferramenta', e.detail || ''];
+  return [e.kind === 'text' ? 'Resposta' : (e.kind || 'Passo'), e.text || e.detail || ''];
+}
+
+function renderLive() {
+  const onChat = !run.sid || run.sid === curSid();
+  const show = onChat && (run.active || run.result);
+  live.hidden = !show;
+  if (!show) return;
+  live.className = run.active ? '' : (run.result && run.result.is_error ? 'err' : 'done');
+  if (run.active) {
+    const last = run.events[run.events.length - 1];
+    const [lk, ld] = last ? eventLine(last) : ['Começando…', ''];
+    const parts = [
+      el('div', { class: 'live-row' },
+        el('span', { class: 'live-dot', 'aria-hidden': 'true' }),
+        el('div', { class: 'live-title' }, 'Trabalhando', el('small', { id: 'live-clock', text: clock() })),
+        run.events.length > 1 ? el('button', { class: 'live-btn', type: 'button', 'aria-expanded': String(run.open), onclick: () => { run.open = !run.open; renderLive(); }, text: run.open ? 'Ocultar' : `Passos (${run.events.length})` }) : null,
+        el('button', { class: 'live-btn stop', type: 'button', onclick: stopRun, text: 'Parar' })),
+      run.offline ? el('div', { class: 'live-last', text: 'Sem conexão. Tentando de novo…' })
+        : el('div', { class: 'live-last', text: last ? `${lk}${ld ? ' · ' + ld : ''}` : lk }),
+    ];
+    if (run.open) parts.push(el('ul', { class: 'live-steps', 'aria-label': 'Passos da execução' },
+      run.events.slice(-60).map((e) => { const [k, d] = eventLine(e); return el('li', {}, el('b', { text: k }), el('span', { text: d })); })));
+    live.replaceChildren(...parts);
+    if (run.open) { const ul = live.querySelector('.live-steps'); ul.scrollTop = ul.scrollHeight; }
+  } else {
+    const r = run.result;
+    const bad = r.is_error;
+    const info = [r.duration_ms != null ? fmtDur(r.duration_ms) : '', fmtCost(r.cost_usd)].filter(Boolean).join(' · ');
+    live.replaceChildren(
+      el('div', { class: 'live-row' },
+        el('div', { class: 'live-title' }, bad ? 'A execução falhou' : 'Terminou', info ? el('small', { text: info }) : null),
+        el('button', { class: 'live-btn', type: 'button', onclick: () => { run.result = null; renderLive(); }, text: 'Fechar' })),
+      ...(bad && r.text ? [el('div', { class: 'live-last', text: r.text })] : []));
+  }
+}
+function clock() { const s = Math.max(0, Math.floor((Date.now() - run.start) / 1000)); return `${Math.floor(s / 60)}:${pad2(s % 60)}`; }
+setInterval(() => { const c = $('#live-clock'); if (c && run.active) c.textContent = clock(); }, 1000);
+
+function stopRun() {
+  confirmAsk('Parar a execução em andamento?', async (ok) => {
+    if (!ok) return;
+    try {
+      const r = await api('/api/stop', { method: 'POST', body: {} });
+      if (r && r.ok === false) toast('Não há nada em execução para parar.');
+      else { toast('Parando…'); haptic(); }
+    }
+    catch (e) { if (e.status !== 401) toast(friendly(e.message)); }
+  });
+}
+
+/* ---------- ações: usar no chat / encerrar (o painel não envia mensagens) ---------- */
+const shortOf = (s) => s.short || String(s.session_id).slice(0, 8);
+const END_MSG = { stopped: 'Sessão parada.', terminated: 'Sessão encerrada no PC.', sigterm_sent: 'Encerrando no PC…', not_running: 'A sessão não estava rodando.' };
+
+// Ativa a sessão no bot e fecha o painel para o dono escrever no chat do Telegram.
+async function activateAndClose(sid) {
+  const r = await api('/api/session/use', { method: 'POST', body: { session_id: sid } });
+  if (r && r.ok === false) throw new ApiError(400, r.error || 'Não foi possível ativar a sessão.');
+  haptic('ok');
+  if (S.state) S.state.session_id = sid;
+  if (chat.view === sid) chat.view = null; // agora é a ativa
+  if (tg && typeof tg.close === 'function') { safe(() => tg.close()); return; }
+  toast('Sessão ativa. Escreva no chat do Telegram.');
+  agora = null; sessions = null;
+  loadState();
+  if (S.tab === 'agora') loadAgora();
+}
+
+async function useInChat(s, node) {
+  if (node) node.setAttribute('aria-busy', 'true');
+  try { await activateAndClose(s.session_id); }
+  catch (e) { if (e.status !== 401) toast(friendly(e.message)); }
+  finally { if (node) node.removeAttribute('aria-busy'); }
+}
+
+function endSession(s, node) {
+  confirmAsk(`Encerrar a sessão ${shortOf(s)}? Se estiver aberta no PC, o processo do Claude será finalizado.`, async (ok) => {
+    if (!ok) return;
+    if (node) node.setAttribute('aria-busy', 'true');
+    try {
+      const r = await api('/api/session/end', { method: 'POST', body: { session_id: s.session_id } });
+      haptic();
+      toast((r && END_MSG[r.outcome]) || 'Sessão encerrada.');
+      if (run.sid === s.session_id) runReset();
+      agora = null; sessions = null;
+      await loadState();
+      if (S.tab === 'agora') loadAgora();
+      if (S.tab === 'conversa' && chat.sid === s.session_id) loadHistory(true);
+    } catch (e) {
+      if (e.status !== 401) toast(friendly(e.message));
+    } finally { if (node) node.removeAttribute('aria-busy'); }
+  });
+}
+
+const chatActs = $('#chat-acts');
+function syncChatActs() {
+  const sid = curSid();
+  chatActs.hidden = !sid;
+  const note = $('#chat-note');
+  note.hidden = !(chat.view && chat.view !== activeSid());
+  if (!note.hidden) note.textContent = `Sessão ${chat.view.slice(0, 8)} · não é a ativa no bot`;
+}
+$('#chat-use').addEventListener('click', () => { const sid = curSid(); if (sid) useInChat({ session_id: sid }, chatActs); });
+$('#chat-end').addEventListener('click', () => { const sid = curSid(); if (sid) endSession({ session_id: sid }, chatActs); });
+
+$('#lock-retry').addEventListener('click', async () => {
+  const b = $('#lock-retry'); b.disabled = true;
+  await loadState();
+  b.disabled = false;
+  if (!$('#lock').hidden) toast('Ainda trancado.');
+});
+
+/* ---------- deep link: #s=<uuid> ou start_param "s_<uuid>" (não troca a sessão ativa do bot) ---------- */
+function deepLinkSid() {
+  const cand = [];
+  safe(() => {
+    const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+    cand.push(h.get('s'), h.get('tgWebAppStartParam'));
+  });
+  safe(() => cand.push(tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param));
+  for (let v of cand) {
+    if (typeof v !== 'string') continue;
+    if (v.startsWith('s_')) v = v.slice(2);
+    if (UUID_RE.test(v)) return v.toLowerCase();
+  }
+  return null;
+}
+function openDeepLink(sid, push) {
+  chat.view = sid;
+  chat.sid = null;
+  if (push) { if (S.tab && S.stack[S.stack.length - 1] !== S.tab) S.stack.push(S.tab); }
+  else S.stack = ['agora'];
+  runReset();
+  setTab('conversa');
+}
+window.addEventListener('hashchange', () => {
+  const sid = deepLinkSid();
+  if (sid && sid !== curSid() && !authFailed && S.tab) openDeepLink(sid, true);
+});
+
+/* ---------- ciclo ---------- */
+async function tick() {
+  if (document.hidden || authFailed) return;
+  S.tick++;
+  await loadState();
+  if (S.tab === 'agora' && !sheet.open) loadAgora();
+  if (S.tab === 'contas' && S.tick % 6 === 0) loadAccounts();
+  if (S.tab === 'sessoes' && S.tick % 2 === 0) loadSessions();
+}
+setInterval(tick, 5000);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (run.active) { clearTimeout(run.timer); runPoll(); }
+  tick();
+});
+
+(async function init() {
+  $('#contas-body').replaceChildren(...skeletons(3, 150));
+  await loadState();
+  if (authFailed) return;
+  const deep = deepLinkSid();
+  if (deep) { openDeepLink(deep, false); return; }
+  setTab('agora');
+})();
+})();
+</script>
+</body>
+</html>

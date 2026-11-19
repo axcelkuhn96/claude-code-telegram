@@ -1,0 +1,22 @@
+[Unit]
+Description=Bot Telegram que conduz o Claude Code deste notebook
+# nunca desiste: Restart=always sem limite de tentativas (o watchdog/crash loop segue tentando)
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+# o bot manda READY=1 / WATCHDOG=1 pelo próprio processo principal (sem filhos pingando)
+NotifyAccess=main
+# o bot tenta o getMe sem parar em rede lenta antes de mandar READY=1; sem limite de tempo de partida
+TimeoutStartSec=infinity
+WatchdogSec=60
+Restart=always
+RestartSec=5
+EnvironmentFile=%h/.config/claude-telegram/env
+WorkingDirectory=%h/claude-telegram
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/claude-telegram/.venv/bin/python -m bot.main
+
+[Install]
+WantedBy=default.target

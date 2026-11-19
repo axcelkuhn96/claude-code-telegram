@@ -1,0 +1,3 @@
+[lint.per-file-ignores]
+# pytest usa assert; segredos nos testes são valores fake
+"tests/**" = ["S101", "S105", "S106"]

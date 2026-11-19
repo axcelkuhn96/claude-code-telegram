@@ -1,0 +1,23 @@
+# Tudo que começa com "." (pastas e arquivos) fica fora do git — exceto este arquivo
+.*
+.*/
+!.gitignore
+
+# Python
+__pycache__/
+*.pyc
+
+# Segredos: nunca versionar
+*.env
+env
+*.secret
+*.pem
+*.key
+*credentials*
+local.secret
+local.port
+state.json
+projects.txt
+
+# gerado pelo scripts/install.sh (caminhos absolutos da sua maquina)
+deploy/mcp.json

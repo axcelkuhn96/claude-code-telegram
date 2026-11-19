@@ -1,0 +1,1 @@
+{"mcpServers":{"telegram-bot":{"command":"/home/you/claude-telegram/.venv/bin/python","args":["/home/you/claude-telegram/mcp_server/telegram_mcp.py"]}}}
