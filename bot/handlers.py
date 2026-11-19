@@ -1357,10 +1357,23 @@ class Bot:
                 st.account = name
                 self.session_accounts[sid] = name
                 self.save()
+                self._host_release(sid, name)
                 return None, f"🔀 sessão {short(sid)} agora na conta {name}", True
         st.account = name
         self.save()
         return None, f"Conta ativa: {name}", False
+
+    def _host_release(self, sid: str, account: str) -> None:
+        """Sessão hospedada que mudou de conta (ociosa: a troca recusa sessão ocupada): encerra o
+        tmux já; a próxima mensagem segue no `claude -p --resume` ou re-hospeda na conta nova."""
+        host = self.hosts.get(sid)
+        if host is None or host.account == account:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._spawn(self._host_kill(host))
 
     async def switch_account(self, chat_id: int, name: str) -> None:
         err, msg, with_session = self.apply_account(name)

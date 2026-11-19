@@ -676,3 +676,111 @@ async def test_status_conta_hospedadas(tmp_path, monkeypatch):
     await bot.cmd_status(upd(text="/status"), CTX)
     assert "🛰 RC: 1 hospedada(s) · 0 servidor(es)" in sent_texts(bot)[-1]
     await close(bot)
+
+
+# ---------- paridade com o `claude -p` ----------
+
+
+async def test_limite_da_conta_no_tui_oferece_trocar(tmp_path, monkeypatch):
+    from tests.test_handlers import usage_item
+
+    bot, fake, _ = setup(tmp_path, monkeypatch)
+    fake.on_submit = lambda text: [
+        j_user(text),
+        {
+            "type": "assistant",
+            "isSidechain": False,
+            "isApiErrorMessage": True,
+            "error": "rate_limit",
+            "message": {
+                "stop_reason": "stop_sequence",
+                "content": [
+                    j_text(
+                        "You've hit your weekly limit · resets 6pm (America/Sao_Paulo)"
+                    )
+                ],
+            },
+        },
+    ]
+
+    async def usage():
+        return [usage_item("personal", five=100.0), usage_item("claude", five=10.0)]
+
+    bot.usage = usage
+    await asyncio.wait_for(bot.run_prompt(OWNER, "oi"), 5)
+    texts = sent_texts(bot)
+    assert any(t.startswith("❌ You've hit your weekly limit") for t in texts)
+    assert "⚠️ conta personal esgotada. Trocar de conta mantém a sessão:" in texts
+    kb = bot.tg.send_message.call_args_list[-1].kwargs["reply_markup"].inline_keyboard
+    assert kb[0][0].text.startswith("continuar na claude")
+    await close(bot)
+
+
+async def test_trocar_conta_encerra_o_tmux_vai_ao_p_e_volta_re_hospeda(
+    tmp_path, monkeypatch
+):
+    bot, fake, _ = setup(tmp_path, monkeypatch)
+    fake.on_submit = reply_ok
+    await asyncio.wait_for(bot.run_prompt(OWNER, "oi"), 5)
+    err, _, with_session = bot.apply_account("claude")
+    assert err is None and with_session
+    assert await until(lambda: ("kill", NAME) in fake.calls and SID not in bot.hosts)
+    launched = []
+
+    async def launch(sid, args, cwd, env=None):
+        launched.append(args)
+        raise OSError("fake")
+
+    bot.runs.launch = launch
+    await bot.run_prompt(OWNER, "no -p")
+    assert launched and launched[0][1] == "-p" and "--resume" in launched[0]
+    err, _, _ = bot.apply_account("personal")
+    assert err is None
+    await asyncio.wait_for(bot.run_prompt(OWNER, "de volta"), 5)
+    starts = [c for c in fake.calls if c[0] == "start"]
+    assert len(starts) == 2 and "--resume" in starts[1][4]
+    assert SID in bot.hosts
+    await close(bot)
+
+
+async def test_atalho_n_texto_vai_para_a_sessao_hospedada(tmp_path, monkeypatch):
+    bot, fake, project = setup(tmp_path, monkeypatch)
+    other = "33333333-3333-4333-8333-333333333333"
+    bot.state.session_id = other
+    bot.state.slots = {
+        "2": {"session_id": SID, "project": project, "account": "personal"}
+    }
+    fake.on_submit = reply_ok
+    await bot.handle_text(OWNER, "2: oi", None)
+    assert await until(
+        lambda: any(t.startswith("[2·cbs-lab] OK") for t in sent_texts(bot))
+    )
+    assert ("paste", "oi") in fake.calls and bot.state.session_id == other
+    await close(bot)
+
+
+async def test_texto_comum_historico_feed_e_estado_do_painel(tmp_path, monkeypatch):
+    bot, fake, _ = setup(tmp_path, monkeypatch)
+    seen = {}
+
+    def submit(text):
+        seen["running"] = None
+        return [j_user(text), j_assistant(j_tool(command="ls"), stop="tool_use")]
+
+    fake.on_submit = submit
+    await bot.handle_text(OWNER, "texto do chat", None)
+    assert await until(lambda: SID in bot.hosts and bot.hosts[SID].turn_ours)
+    state = await bot.api_state()
+    assert SID in state["running"]
+    assert bot.run_feed(SID)["running"] is True
+    fake.append([j_assistant(j_text("feito")), END])
+    assert await until(lambda: any(t.startswith("feito") for t in sent_texts(bot)))
+    feed = bot.run_feed(SID)
+    assert feed["running"] is False and feed["result"]["text"] == "feito"
+    got = await bot.read_turns(SID, 10, None)
+    assert got is not None
+    turns, _ = got
+    assert any(t.role == "user" and "texto do chat" in t.text for t in turns)
+    assert any(t.role == "assistant" and "feito" in t.text for t in turns)
+    assert SID not in (await bot.api_state())["running"]
+    await close(bot)
